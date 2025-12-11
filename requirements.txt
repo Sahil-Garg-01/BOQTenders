@@ -1,0 +1,14 @@
+langchain
+langchain-community
+pdfplumber
+faiss-cpu
+sentence-transformers
+streamlit
+langchain-google-genai
+langchain-huggingface
+fastapi
+uvicorn
+pydantic-settings
+loguru
+python-dotenv
+python-multipart
