@@ -88,13 +88,13 @@ async def chat(request: ChatRequest) -> Dict[str, str]:
             result = qa_chain({"question": request.question})
         elif boq_processor.LC_OLD_API is False:
             # New LangChain API (1.x): create_retrieval_chain expects explicit 'input' and 'chat_history' keys
-            result = qa_chain.invoke({"input": request.question, "chat_history": []})
+            result = qa_chain.invoke({"question": request.question, "chat_history": []})
         else:
             # Fallback: try to determine based on available methods
             logger.warning("LC_OLD_API not set, attempting auto-detection")
             try:
                 # Try new API first (has invoke method)
-                result = qa_chain.invoke({"input": request.question, "chat_history": []})
+                result = qa_chain.invoke({"question": request.question, "chat_history": []})
             except (TypeError, KeyError, AttributeError):
                 # Fall back to old API (has __call__ method and memory-based chat_history)
                 if hasattr(qa_chain, 'memory') and hasattr(qa_chain.memory, 'clear'):

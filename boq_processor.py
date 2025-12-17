@@ -11,6 +11,7 @@ from langchain_google_genai import GoogleGenerativeAI
 import importlib
 import time
 from functools import wraps
+import re
 
 # Will be set at runtime by setup_rag_chain to either True (old API) or False (new API)
 LC_OLD_API = None
@@ -61,7 +62,7 @@ def retry_with_exponential_backoff(max_retries=3, initial_delay=2, backoff_facto
     return decorator
 
 class Settings(BaseSettings):
-    google_api_key: str = os.getenv("GOOGLE_API_KEY", "")
+    google_api_key: str = os.getenv("GOOGLE_API_KEY")
     model_name: str = "gemini-2.5-flash-lite"
     temperature: float = 0.0
     chunk_size: int = 1000
@@ -116,7 +117,7 @@ def setup_rag_chain(vector_store: FAISS):
             from langchain_core.prompts import PromptTemplate
 
             try:
-                memory = ConversationBufferMemory(memory_key="chat_history", return_messages=False)
+                memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
                 qa_template = """Use the following pieces of context to answer the question at the end.
     If the question is about extracting BOQ, provide a structured list of items including descriptions, quantities, units, rates, and amounts.
     If no BOQ is found, say so.
@@ -260,6 +261,10 @@ Look for structured data with:
 If you find BOQ items, return them in this EXACT format (pipe-separated):
 ITEM_CODE|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT
 
+Rules for columns:
+- If an entire column (for example, `RATE` or `AMOUNT`) has no values anywhere in the document, omit that column from the output entirely (lines will have fewer fields).
+- Otherwise always return all six fields; for any individual missing value return "NA" for that field so the model still returns 6 fields per line.
+
 Return multiple items on separate lines. If NO BOQ items are found, return: "NO_BOQ_ITEMS"
 
 Text to analyze:
@@ -274,20 +279,33 @@ Extract only actual BOQ line items, not headers or table structure."""
             batch_text = "\n\n".join([chunk.page_content for chunk in batch_chunks])
             
             # Extract BOQ items from this batch
-            prompt = extraction_prompt_template.format(text=batch_text[:10000])  # Limit to 10000 chars per batch
+            # Allow larger batches but cap to avoid overly long prompts
+            max_chars = 30000
+            prompt_text = batch_text if len(batch_text) <= max_chars else batch_text[:max_chars]
+            prompt = extraction_prompt_template.format(text=prompt_text)
             
             try:
                 result = llm.invoke(prompt)
                 
                 # Parse the result
-                if result and "NO_BOQ_ITEMS" not in result:
+                if result and "NO_BOQ_ITEMS" not in str(result):
                     # Split by lines and filter valid items
-                    lines = result.strip().split('\n')
+                    lines = str(result).strip().split('\n')
                     for line in lines:
                         line = line.strip()
-                        if line and '|' in line and line.count('|') >= 5:
-                            boq_items.append(line)
-                            logger.debug(f"Found BOQ item: {line[:60]}...")
+                        if not line or '|' not in line:
+                            continue
+
+                        parts = [p.strip() for p in line.split('|')]
+                        # Ensure at least 6 fields; if fewer, pad with 'NA'
+                        if len(parts) < 6:
+                            parts += ['NA'] * (6 - len(parts))
+
+                        # Do not attempt heuristic numeric filling here; keep NA if missing
+
+                        normalized_line = '|'.join(parts[:6])
+                        boq_items.append(normalized_line)
+                        logger.debug(f"Found BOQ item: {normalized_line[:120]}...")
             except Exception as e:
                 logger.warning(f"Error processing batch {batch_num}: {e}")
                 continue
@@ -306,23 +324,44 @@ Extract only actual BOQ line items, not headers or table structure."""
 ## DETAILED BILL OF QUANTITIES
 No BOQ items were found in this document. This may not be a Bill of Quantities document, or the format may not be recognized."""
         
-        # Format as markdown table
+        # Determine which columns actually contain values across all items
+        col_headers = ["Item No/Code", "Description", "Quantity", "Unit", "Rate", "Amount"]
+        cols_present = [False] * 6
+        normalized_items = []
+        for item in unique_items:
+            parts = [p.strip() for p in item.split('|')]
+            if len(parts) < 6:
+                parts += ['NA'] * (6 - len(parts))
+            normalized_items.append(parts[:6])
+            for i in range(6):
+                if parts[i] and parts[i].upper() != 'NA':
+                    cols_present[i] = True
+
+        # If a column is entirely empty (all NA), omit it from the table
+        col_indices = [i for i, present in enumerate(cols_present) if present]
+        # Always include Item No/Code and Description even if missing (fallback)
+        if 0 not in col_indices:
+            col_indices.insert(0, 0)
+        if 1 not in col_indices:
+            col_indices.insert(1, 1)
+
+        # Build table header dynamically
+        header_row = "| " + " | ".join([col_headers[i] for i in col_indices]) + " |\n"
+        sep_row = "|" + "|".join(["-" * (len(col_headers[i]) + 2) for i in col_indices]) + "|\n"
+
         formatted_boq = f"""## DOCUMENT SUMMARY
 {metadata_result}
 
 ## DETAILED BILL OF QUANTITIES
 **Total Items Found:** {len(unique_items)}
 
-| Item No/Code | Description | Quantity | Unit | Rate | Amount |
-|--------------|-------------|----------|------|------|--------|
-"""
-        
-        for item in unique_items:
-            parts = [p.strip() for p in item.split('|')]
-            if len(parts) >= 6:
-                # Truncate long descriptions
-                desc = parts[1][:80] if len(parts[1]) > 80 else parts[1]
-                formatted_boq += f"| {parts[0]} | {desc} | {parts[2]} | {parts[3]} | {parts[4]} | {parts[5]} |\n"
+    {header_row}{sep_row}"""
+
+        for parts in normalized_items:
+            # Truncate long descriptions
+            parts[1] = parts[1][:80] if len(parts[1]) > 80 else parts[1]
+            row_vals = [parts[i] for i in col_indices]
+            formatted_boq += "| " + " | ".join(row_vals) + " |\n"
         
         # Calculate totals if possible
         total_amount = 0
@@ -342,14 +381,40 @@ No BOQ items were found in this document. This may not be a Bill of Quantities d
 
 ## SUMMARY
 - **Total Items:** {len(unique_items)}
-- **Items with Valid Amounts:** {valid_amounts}
--Optimized for free tier API limits: ~11 calls per extraction (can run 1-2 times per day with 20 API limit)*
-*Batches: {len(batches)} | API calls: ~{len(batches) + 1} (1 metadata + {len(batches)} batches)
-
----
-*Note: Processed {len(chunks)} chunks in {len(batches)} batches to ensure complete BOQ extraction.*
 """
-        
+
+        # Normalize markdown: unify newlines, strip leading spaces, ensure proper table separation
+        try:
+            s = formatted_boq.replace('\r\n', '\n').replace('\r', '\n')
+            lines = [ln.lstrip() for ln in s.split('\n')]
+
+            # Ensure blank line before first table header (line that starts with '| ')
+            header_idx = None
+            for idx, ln in enumerate(lines):
+                if ln.startswith('| '):
+                    header_idx = idx
+                    break
+            if header_idx is not None and header_idx > 0 and lines[header_idx - 1].strip() != '':
+                lines.insert(header_idx, '')
+                header_idx += 1
+
+            # Ensure separator row exists immediately after header and is valid
+            if header_idx is not None:
+                sep_idx = header_idx + 1
+                if not (sep_idx < len(lines) and re.match(r"^\|\s*-+", lines[sep_idx])):
+                    # build a simple separator with three dashes per column
+                    cols = [c for c in lines[header_idx].split('|') if c.strip()]
+                    sep = '|' + '|'.join(['---' for _ in cols]) + '|'
+                    lines.insert(sep_idx, sep)
+
+            # Re-join ensuring each table row is on its own line
+            formatted_boq = '\n'.join(lines).strip() + '\n\n'
+        except Exception:
+            # If normalization fails, fall back to original
+            formatted_boq = formatted_boq
+
+        # (Previously attempted to insert formatted BOQ into vector_store; removed to avoid mutating index)
+
         logger.info("Comprehensive BOQ extraction completed successfully")
         return formatted_boq
         
