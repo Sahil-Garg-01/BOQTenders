@@ -276,7 +276,17 @@ Extract only actual BOQ line items, not headers or table structure."""
             logger.info(f"Processing batch {batch_num}/{len(batches)}")
             
             # Combine all chunks in this batch
-            batch_text = "\n\n".join([chunk.page_content for chunk in batch_chunks])
+            chunk_texts = [chunk.page_content for chunk in batch_chunks]
+            batch_text = "\n\n".join(chunk_texts)
+            # compute start/end offsets for each chunk in batch_text for source mapping
+            offsets = []
+            pos = 0
+            for ci, txt in enumerate(chunk_texts):
+                start = pos
+                end = start + len(txt)
+                md = getattr(batch_chunks[ci], 'metadata', {}) or {}
+                offsets.append((start, end, md, ci))
+                pos = end + 2
             
             # Extract BOQ items from this batch
             # Allow larger batches but cap to avoid overly long prompts
@@ -301,7 +311,26 @@ Extract only actual BOQ line items, not headers or table structure."""
                         if len(parts) < 6:
                             parts += ['NA'] * (6 - len(parts))
 
-                        # Do not attempt heuristic numeric filling here; keep NA if missing
+                        # Try to map this extracted line back to a source chunk (page) and append inline tag
+                        source_tag = None
+                        try:
+                            snippet = parts[1].strip()[:60]
+                            if snippet:
+                                idx_found = batch_text.find(snippet)
+                                if idx_found != -1:
+                                    for start, end, md, cidx in offsets:
+                                        if start <= idx_found <= end:
+                                            page = md.get('page') or md.get('page_number') or md.get('pageIndex') or md.get('pageindex')
+                                            if page is None:
+                                                page = cidx + 1
+                                            source_tag = f"p.{page}"
+                                            break
+                        except Exception:
+                            source_tag = None
+
+                        if source_tag and parts[1]:
+                            if '(' not in parts[1]:
+                                parts[1] = f"{parts[1]} ({source_tag})"
 
                         normalized_line = '|'.join(parts[:6])
                         boq_items.append(normalized_line)
