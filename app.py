@@ -29,7 +29,7 @@ async def upload_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
             shutil.copyfileobj(file.file, buffer)
         
         logger.info(f"Processing uploaded PDF: {file.filename}")
-        chunks = boq_processor.load_and_process_pdf(pdf_path)
+        chunks = boq_processor.load_and_process_pdf(pdf_path, filename=file.filename)
         vector_store = boq_processor.create_vector_store(chunks)
         qa_chain = boq_processor.setup_rag_chain(vector_store)
         

@@ -30,8 +30,8 @@ with st.sidebar:
 uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
 
 if uploaded_file is not None:
-    if st.button("Process PDF"):
-        with st.spinner("Processing PDF..."):
+    if st.button("Generate BOQ"):
+        with st.spinner("Generating BOQ..."):
             # Save uploaded file to a temp file
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                 tmp_file.write(uploaded_file.getvalue())
@@ -39,7 +39,7 @@ if uploaded_file is not None:
             
             try:
                 # Process
-                chunks = boq_processor.load_and_process_pdf(tmp_path)
+                chunks = boq_processor.load_and_process_pdf(tmp_path, filename=uploaded_file.name)
                 vector_store = boq_processor.create_vector_store(chunks)
                 qa_chain = boq_processor.setup_rag_chain(vector_store)
                 
@@ -51,7 +51,7 @@ if uploaded_file is not None:
                 st.session_state.extracted_boq = extracted_boq
                 st.session_state.messages = []  # reset chat history
 
-                st.success("✅ PDF processed successfully!")
+                st.success("✅ BOQ generated successfully!")
             except Exception as e:
                 error_msg = str(e)
                 if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():

@@ -12,3 +12,4 @@ pydantic-settings
 loguru
 python-dotenv
 python-multipart
+requests

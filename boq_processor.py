@@ -1,9 +1,8 @@
 import os
-from typing import List
+from typing import List, Optional
 import dotenv
 from pydantic_settings import BaseSettings
 from loguru import logger
-from langchain_community.document_loaders import PDFPlumberLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -12,57 +11,41 @@ import importlib
 import time
 from functools import wraps
 import re
-
-# Will be set at runtime by setup_rag_chain to either True (old API) or False (new API)
-LC_OLD_API = None
+import requests
 
 from langchain_core.documents import Document
 
 # Load environment variables
 dotenv.load_dotenv()
 
-def retry_with_exponential_backoff(max_retries=3, initial_delay=2, backoff_factor=2):
-    """Decorator for retry logic with exponential backoff for API rate limits.
-    
-    Args:
-        max_retries: Maximum number of retry attempts
-        initial_delay: Initial delay in seconds before first retry
-        backoff_factor: Multiplier for exponential backoff
-    """
+def retry_with_exponential_backoff(max_retries: int = 3, initial_delay: int = 2, backoff_factor: int = 2):
+    """Decorator for retry logic with exponential backoff for API rate limits."""
     def decorator(func):
         @wraps(func)
         def wrapper(*args, **kwargs):
             last_exception = None
-            
             for attempt in range(max_retries + 1):
                 try:
                     return func(*args, **kwargs)
                 except Exception as e:
                     last_exception = e
                     error_str = str(e)
-                    
-                    # Check if it's a rate limit error (429 or RESOURCE_EXHAUSTED)
-                    is_rate_limit = ("429" in error_str or 
-                                    "RESOURCE_EXHAUSTED" in error_str or 
-                                    "quota" in error_str.lower())
-                    
+                    is_rate_limit = ("429" in error_str or "RESOURCE_EXHAUSTED" in error_str or "quota" in error_str.lower())
                     if is_rate_limit and attempt < max_retries:
                         delay = initial_delay * (backoff_factor ** attempt)
                         logger.warning(f"Rate limit encountered. Retry {attempt + 1}/{max_retries} in {delay}s: {error_str}")
                         time.sleep(delay)
                     else:
-                        # Not a rate limit error or last retry - raise immediately
                         if is_rate_limit and attempt == max_retries:
                             logger.error(f"Rate limit exhausted after {max_retries} retries")
                         raise
-            
-            # This should not be reached, but in case it is
             raise last_exception
         return wrapper
     return decorator
 
 class Settings(BaseSettings):
     google_api_key: str = os.getenv("GOOGLE_API_KEY")
+    hf_api_token: str = os.getenv("HF_API_TOKEN")
     model_name: str = "gemini-2.5-flash-lite"
     temperature: float = 0.0
     chunk_size: int = 1000
@@ -71,160 +54,184 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
-def load_and_process_pdf(pdf_path: str) -> List[Document]:
-    try:
-        logger.info(f"Loading PDF from {pdf_path}")
-        loader = PDFPlumberLoader(pdf_path)
-        documents = loader.load()
-        logger.info(f"Loaded {len(documents)} documents")
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=settings.chunk_size, chunk_overlap=settings.chunk_overlap)
-        chunks = text_splitter.split_documents(documents)
-        logger.info(f"Split into {len(chunks)} chunks")
-        return chunks
-    except Exception as e:
-        logger.error(f"Error loading and processing PDF: {e}")
-        raise
-
-def create_vector_store(chunks: List[Document]) -> FAISS:
-    try:
-        logger.info("Creating embeddings and vector store")
-        embeddings = HuggingFaceEmbeddings(model_name=settings.embedding_model)
-        vector_store = FAISS.from_documents(chunks, embeddings)
-        logger.info("Vector store created successfully")
-        return vector_store
-    except Exception as e:
-        logger.error(f"Error creating vector store: {e}")
-        raise
-
-def setup_rag_chain(vector_store: FAISS):
-    """Create and return a retrieval-augmented chain compatible with installed LangChain.
-
-    This function detects the available LangChain API at runtime and builds a chain
-    using the old `ConversationalRetrievalChain` (0.1.x) or the newer 1.x APIs.
-    """
-    global LC_OLD_API
-    logger.info("Setting up RAG chain")
-    llm = GoogleGenerativeAI(model=settings.model_name, temperature=settings.temperature)
-
-    # Try old API first
-    try:
-        conv_module = importlib.import_module("langchain_classic.chains")
-        # If import succeeds and has ConversationalRetrievalChain, use old API
-        if hasattr(conv_module, "ConversationalRetrievalChain"):
-            LC_OLD_API = True
-            from langchain_classic.chains import ConversationalRetrievalChain
-            from langchain_classic.memory import ConversationBufferMemory
-            from langchain_core.prompts import PromptTemplate
-
-            try:
-                memory = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
-                qa_template = """Use the following pieces of context to answer the question at the end.
-    If the question is about extracting BOQ, provide a structured list of items including descriptions, quantities, units, rates, and amounts.
-    If no BOQ is found, say so.
-
-    {context}
-
-    Question: {question}
-    Answer:"""
-                qa_prompt = PromptTemplate.from_template(qa_template)
-                qa_chain = ConversationalRetrievalChain.from_llm(
-                    llm=llm,
-                    retriever=vector_store.as_retriever(),
-                    memory=memory,
-                    combine_docs_chain_kwargs={"prompt": qa_prompt},
-                )
-                logger.info("RAG chain set up successfully (old API)")
-                return qa_chain
-            except Exception as e:
-                logger.error(f"Error building chain with old LangChain API: {e}")
-                raise
-    except Exception:
-        # Old API not available, try new API imports
-        pass
-
-    # Try new API (LangChain 1.x)
-    try:
-        create_retrieval_chain = importlib.import_module("langchain.chains").create_retrieval_chain
-        create_history_aware_retriever = importlib.import_module("langchain.chains").create_history_aware_retriever
-        create_stuff_documents_chain = importlib.import_module("langchain.chains").create_stuff_documents_chain
-        from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-
-        LC_OLD_API = False
-
-        contextualize_q_system_prompt = (
-            """Given a chat history and the latest user question which might reference context in the chat history, """
-            """formulate a standalone question which can be understood without the chat history. Do not answer the question, """
-            """just reformulate it if needed and otherwise return it as is."""
+class BOQProcessor:
+    def __init__(self):
+        self.settings = settings
+        self.llm = GoogleGenerativeAI(model=self.settings.model_name, temperature=self.settings.temperature)
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=self.settings.chunk_size,
+            chunk_overlap=self.settings.chunk_overlap
         )
-        contextualize_q_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", contextualize_q_system_prompt),
-                MessagesPlaceholder("chat_history"),
-                ("human", "{input}"),
-            ]
-        )
-        history_aware_retriever = create_history_aware_retriever(
-            llm, vector_store.as_retriever(), contextualize_q_prompt
-        )
+        self.lc_old_api: Optional[bool] = None
 
-        qa_system_prompt = """Use the following pieces of context to answer the question at the end.
-    If the question is about extracting BOQ, provide a structured list of items including descriptions, quantities, units, rates, and amounts.
-    If no BOQ is found, say so.
+    def _table_to_markdown(self, table: dict) -> str:
+        headers = table.get('headers', [])
+        rows = table.get('rows', [])
+        if not headers:
+            return ''
+        md = '| ' + ' | '.join(headers) + ' |\n'
+        md += '|' + '|'.join(['---'] * len(headers)) + '|\n'
+        for row in rows:
+            md += '| ' + ' | '.join(str(cell) for cell in row) + ' |\n'
+        return md
 
-    {context}"""
-        qa_prompt = ChatPromptTemplate.from_messages(
-            [
-                ("system", qa_system_prompt),
-                MessagesPlaceholder("chat_history"),
-                ("human", "{input}"),
-            ]
-        )
-        question_answer_chain = create_stuff_documents_chain(llm, qa_prompt)
-        rag_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
-        logger.info("RAG chain set up successfully (new API)")
-        return rag_chain
-    except Exception as e:
-        logger.error(f"Could not import a compatible LangChain API: {e}")
-        raise RuntimeError(
-            "Unsupported LangChain version installed. Install either a 0.1.x series LangChain that provides ConversationalRetrievalChain, "
-            "or a 1.x series with create_retrieval_chain. See project README for recommended versions."
-        ) from e
+    def _call_extract_text_api(self, pdf_path: str, start_page: int = 1, end_page: int = 10, filename: str = None) -> str:
+        display_name = filename or os.path.basename(pdf_path)
+        logger.info(f'Starting text extraction for {display_name} (pages {start_page}-{end_page})')
+        with open(pdf_path, 'rb') as f:
+            files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
+            data = {'start_page': start_page, 'end_page': end_page, 'filename': os.path.basename(pdf_path)}
+            headers = {'Authorization': f'Bearer {self.settings.hf_api_token}'}
+            response = requests.post(
+                'https://point9-extract-text-and-table.hf.space/api/text',
+                files=files,
+                data=data,
+                headers=headers
+            )
+            response.raise_for_status()
+            result = response.json().get('text', '')
+            logger.info(f'Text extraction completed, response length: {len(result)}')
+            return result
 
-@retry_with_exponential_backoff(max_retries=3, initial_delay=2)
-def extract_boq(qa_chain) -> str:
-    """Legacy function - kept only for backward compatibility with chat interface.
-    
-    DO NOT USE for BOQ extraction. Use extract_boq_comprehensive() instead.
-    """
-    raise NotImplementedError(
-        "extract_boq() is deprecated. Use extract_boq_comprehensive(chunks, vector_store) instead."
-    )
+    def _call_extract_tables_api(self, pdf_path: str, start_page: int = 1, end_page: int = 10, filename: str = None) -> List[dict]:
+        display_name = filename or os.path.basename(pdf_path)
+        logger.info(f'Starting table extraction for {display_name} (pages {start_page}-{end_page})')
+        with open(pdf_path, 'rb') as f:
+            files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
+            data = {'start_page': start_page, 'end_page': end_page, 'filename': os.path.basename(pdf_path)}
+            headers = {'Authorization': f'Bearer {self.settings.hf_api_token}'}
+            response = requests.post(
+                'https://point9-extract-text-and-table.hf.space/api/tables',
+                files=files,
+                data=data,
+                headers=headers
+            )
+            response.raise_for_status()
+            result = response.json().get('tables', [])
+            logger.info(f'Table extraction completed, found {len(result)} tables')
+            return result
 
+    def load_and_process_pdf(self, pdf_path: str, filename: str = None) -> List[Document]:
+        try:
+            display_name = filename or os.path.basename(pdf_path)
+            logger.info(f'Processing PDF from {display_name} using Hugging Face API')
+            logger.info('Calling text extraction API...')
+            extracted_text = self._call_extract_text_api(pdf_path, filename=filename)
+            logger.info(f'Extracted text length: {len(extracted_text)}')
+            if extracted_text:
+                logger.info(f'Text preview: {extracted_text[:200]}...')
+            else:
+                logger.warning('Extracted text is empty')
+            logger.info('Calling table extraction API...')
+            tables = self._call_extract_tables_api(pdf_path, filename=filename)
+            logger.info(f'Extracted {len(tables)} tables')
+            logger.info('Converting tables to markdown...')
+            table_texts = [self._table_to_markdown(table) for table in tables]
+            logger.info(f'Converted {len(table_texts)} tables to markdown')
+            full_content = extracted_text + '\n\n' + '\n\n'.join(table_texts)
+            logger.info(f'Combined content length: {len(full_content)}')
+            logger.info('Splitting content into chunks...')
+            chunks = self.text_splitter.create_documents([full_content])
+            logger.info(f'Split into {len(chunks)} chunks')
+            return chunks
+        except Exception as e:
+            logger.error(f'Error loading and processing PDF: {e}')
+            raise
 
-@retry_with_exponential_backoff(max_retries=3, initial_delay=2)
-def extract_boq_comprehensive(chunks: List[Document], vector_store: FAISS = None) -> str:
-    """Comprehensive BOQ extraction using batched processing.
-    
-    This processes chunks in batches to minimize API calls while ensuring complete coverage.
-    
-    Args:
-        chunks: All document chunks from the PDF
-        vector_store: Optional vector store for metadata extraction
-    
-    Returns:
-        Formatted BOQ string with all items found
-    """
-    try:
-        logger.info(f"Starting comprehensive BOQ extraction from {len(chunks)} chunks")
-        
-        # Initialize LLM
-        llm = GoogleGenerativeAI(model=settings.model_name, temperature=settings.temperature)
-        
-        # Step 1: Extract document metadata from first few chunks
-        logger.info("Extracting document metadata")
-        metadata_text = "\n\n".join([chunk.page_content for chunk in chunks[:3]])
-        
-        metadata_prompt = f"""Analyze this tender document excerpt and extract:
+    def create_vector_store(self, chunks: List[Document]) -> FAISS:
+        try:
+            logger.info('Creating embeddings and vector store')
+            logger.info(f'Processing {len(chunks)} chunks for embeddings')
+            embeddings = HuggingFaceEmbeddings(model_name=self.settings.embedding_model)
+            logger.info('Embeddings model loaded, creating FAISS vector store...')
+            vector_store = FAISS.from_documents(chunks, embeddings)
+            logger.info('Vector store created successfully')
+            return vector_store
+        except Exception as e:
+            logger.error(f'Error creating vector store: {e}')
+            raise
+
+    def _detect_langchain_api(self):
+        logger.info('Detecting LangChain API version...')
+        try:
+            conv_module = importlib.import_module('langchain_classic.chains')
+            if hasattr(conv_module, 'ConversationalRetrievalChain'):
+                self.lc_old_api = True
+                logger.info('Detected LangChain classic API (0.1.x)')
+                from langchain_classic.chains import ConversationalRetrievalChain
+                from langchain_classic.memory import ConversationBufferMemory
+                from langchain_core.prompts import PromptTemplate
+                return ConversationalRetrievalChain, ConversationBufferMemory, PromptTemplate
+        except ImportError:
+            pass
+        try:
+            create_retrieval_chain = importlib.import_module('langchain.chains').create_retrieval_chain
+            create_history_aware_retriever = importlib.import_module('langchain.chains').create_history_aware_retriever
+            create_stuff_documents_chain = importlib.import_module('langchain.chains').create_stuff_documents_chain
+            from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+            self.lc_old_api = False
+            logger.info('Detected LangChain new API (1.x)')
+            return create_retrieval_chain, create_history_aware_retriever, create_stuff_documents_chain, ChatPromptTemplate, MessagesPlaceholder
+        except ImportError as e:
+            logger.error('Unsupported LangChain version')
+            raise RuntimeError('Unsupported LangChain version. Install 0.1.x or 1.x series.') from e
+
+    def setup_rag_chain(self, vector_store: FAISS):
+        logger.info('Setting up RAG chain')
+        api_components = self._detect_langchain_api()
+        if self.lc_old_api:
+            logger.info('Using old LangChain API for RAG chain setup')
+            ConversationalRetrievalChain, ConversationBufferMemory, PromptTemplate = api_components
+            memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
+            qa_template = '''Use the following pieces of context to answer the question at the end.
+If the question is about extracting BOQ, provide a structured list of items including descriptions, quantities, units, rates, and amounts.
+If no BOQ is found, say so.
+
+{context}
+
+Question: {question}
+Answer:'''
+            qa_prompt = PromptTemplate.from_template(qa_template)
+            qa_chain = ConversationalRetrievalChain.from_llm(
+                llm=self.llm,
+                retriever=vector_store.as_retriever(),
+                memory=memory,
+                combine_docs_chain_kwargs={'prompt': qa_prompt},
+            )
+        else:
+            logger.info('Using new LangChain API for RAG chain setup')
+            create_retrieval_chain, create_history_aware_retriever, create_stuff_documents_chain, ChatPromptTemplate, MessagesPlaceholder = api_components
+            contextualize_q_system_prompt = (
+                'Given a chat history and the latest user question which might reference context in the chat history, '
+                'formulate a standalone question which can be understood without the chat history. Do not answer the question, '
+                'just reformulate it if needed and otherwise return it as is.'
+            )
+            contextualize_q_prompt = ChatPromptTemplate.from_messages([
+                ('system', contextualize_q_system_prompt),
+                MessagesPlaceholder('chat_history'),
+                ('human', '{input}'),
+            ])
+            history_aware_retriever = create_history_aware_retriever(
+                self.llm, vector_store.as_retriever(), contextualize_q_prompt
+            )
+            qa_system_prompt = '''Use the following pieces of context to answer the question at the end.
+If the question is about extracting BOQ, provide a structured list of items including descriptions, quantities, units, rates, and amounts.
+If no BOQ is found, say so.
+
+{context}'''
+            qa_prompt = ChatPromptTemplate.from_messages([
+                ('system', qa_system_prompt),
+                MessagesPlaceholder('chat_history'),
+                ('human', '{input}'),
+            ])
+            question_answer_chain = create_stuff_documents_chain(self.llm, qa_prompt)
+            qa_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
+        logger.info(f'RAG chain set up successfully ({"old" if self.lc_old_api else "new"} API)')
+        return qa_chain
+
+    def _extract_metadata(self, chunks: List[Document]) -> str:
+        metadata_text = '\n\n'.join([chunk.page_content for chunk in chunks[:3]])
+        metadata_prompt = f'''Analyze this tender document excerpt and extract:
 1. Document Type (e.g., Civil BOQ, Electrical BOQ, etc.)
 2. Project Name
 3. Any other relevant project information
@@ -232,23 +239,17 @@ def extract_boq_comprehensive(chunks: List[Document], vector_store: FAISS = None
 Document excerpt:
 {metadata_text[:2000]}
 
-Provide a brief summary."""
-        
-        metadata_result = llm.invoke(metadata_prompt)
-        
-        # Note: This metadata call is separate but necessary for document context
-        # Total API usage: 1 metadata + batches = typically 11 calls max, still under 20/day limit
-        
-        # Step 2: Batch chunks for efficient processing
-        logger.info("Batching chunks for efficient API processing")
-        batch_size = 24  # Process 24 chunks per API call (240 chunks = 10 API calls)
-        batches = [chunks[i:i + batch_size] for i in range(0, len(chunks), batch_size)]
-        logger.info(f"Created {len(batches)} batches from {len(chunks)} chunks (batch_size={batch_size}) - ~{len(batches)} API calls total")
-        
-        boq_items = []
-        
-        # Step 3: Extract BOQ items from each batch
-        extraction_prompt_template = """Analyze this text and extract ONLY Bill of Quantities (BOQ) line items if present.
+Provide a brief summary.'''
+        logger.info('Invoking LLM for metadata extraction...')
+        result = str(self.llm.invoke(metadata_prompt))
+        logger.info('Metadata extraction completed')
+        return result
+
+    def _batch_chunks(self, chunks: List[Document], batch_size: int = 24) -> List[List[Document]]:
+        return [chunks[i:i + batch_size] for i in range(0, len(chunks), batch_size)]
+
+    def _extract_boq_from_batch(self, batch_text: str, batch_chunks: List[Document], batch_num: int) -> List[str]:
+        extraction_prompt = '''Analyze this text and extract ONLY Bill of Quantities (BOQ) line items if present.
 
 Look for structured data with:
 - Item numbers or codes
@@ -262,99 +263,56 @@ If you find BOQ items, return them in this EXACT format (pipe-separated):
 ITEM_CODE|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT
 
 Rules for columns:
-- If an entire column (for example, `RATE` or `AMOUNT`) has no values anywhere in the document, omit that column from the output entirely (lines will have fewer fields).
-- Otherwise always return all six fields; for any individual missing value return "NA" for that field so the model still returns 6 fields per line.
+- If an entire column has no values, omit that column.
+- For missing values, use "NA".
 
 Return multiple items on separate lines. If NO BOQ items are found, return: "NO_BOQ_ITEMS"
 
 Text to analyze:
-{text}
+{batch_text}
 
-Extract only actual BOQ line items, not headers or table structure."""
-        
-        for batch_num, batch_chunks in enumerate(batches, 1):
-            logger.info(f"Processing batch {batch_num}/{len(batches)}")
-            
-            # Combine all chunks in this batch
-            chunk_texts = [chunk.page_content for chunk in batch_chunks]
-            batch_text = "\n\n".join(chunk_texts)
-            # compute start/end offsets for each chunk in batch_text for source mapping
-            offsets = []
-            pos = 0
-            for ci, txt in enumerate(chunk_texts):
-                start = pos
-                end = start + len(txt)
-                md = getattr(batch_chunks[ci], 'metadata', {}) or {}
-                offsets.append((start, end, md, ci))
-                pos = end + 2
-            
-            # Extract BOQ items from this batch
-            # Allow larger batches but cap to avoid overly long prompts
-            max_chars = 30000
-            prompt_text = batch_text if len(batch_text) <= max_chars else batch_text[:max_chars]
-            prompt = extraction_prompt_template.format(text=prompt_text)
-            
-            try:
-                result = llm.invoke(prompt)
-                
-                # Parse the result
-                if result and "NO_BOQ_ITEMS" not in str(result):
-                    # Split by lines and filter valid items
-                    lines = str(result).strip().split('\n')
-                    for line in lines:
-                        line = line.strip()
-                        if not line or '|' not in line:
-                            continue
+Extract only actual BOQ line items.'''
 
-                        parts = [p.strip() for p in line.split('|')]
-                        # Ensure at least 6 fields; if fewer, pad with 'NA'
-                        if len(parts) < 6:
-                            parts += ['NA'] * (6 - len(parts))
+        prompt_text = batch_text[:30000]
+        prompt = extraction_prompt.format(batch_text=prompt_text)
 
-                        # Try to map this extracted line back to a source chunk (page) and append inline tag
-                        source_tag = None
-                        try:
-                            snippet = parts[1].strip()[:60]
-                            if snippet:
-                                idx_found = batch_text.find(snippet)
-                                if idx_found != -1:
-                                    for start, end, md, cidx in offsets:
-                                        if start <= idx_found <= end:
-                                            page = md.get('page') or md.get('page_number') or md.get('pageIndex') or md.get('pageindex')
-                                            if page is None:
-                                                page = cidx + 1
-                                            source_tag = f"p.{page}"
-                                            break
-                        except Exception:
-                            source_tag = None
+        try:
+            logger.info(f'Invoking LLM for BOQ extraction on batch {batch_num}...')
+            result = self.llm.invoke(prompt)
+            logger.info(f'LLM response received for batch {batch_num}')
+            if 'NO_BOQ_ITEMS' in str(result):
+                logger.info(f'No BOQ items found in batch {batch_num}')
+                return []
+            boq_items = []
+            lines = str(result).strip().split('\n')
+            for line in lines:
+                line = line.strip()
+                if not line or '|' not in line:
+                    continue
+                parts = [p.strip() for p in line.split('|')]
+                if len(parts) < 6:
+                    parts += ['NA'] * (6 - len(parts))
+                source_tag = f'p.{batch_num}'
+                if parts[1] and '(' not in parts[1]:
+                    parts[1] = f'{parts[1]} ({source_tag})'
+                boq_items.append('|'.join(parts[:6]))
+            logger.info(f'Extracted {len(boq_items)} BOQ items from batch {batch_num}')
+            return boq_items
+        except Exception as e:
+            logger.warning(f'Error processing batch {batch_num}: {e}')
+            return []
 
-                        if source_tag and parts[1]:
-                            if '(' not in parts[1]:
-                                parts[1] = f"{parts[1]} ({source_tag})"
-
-                        normalized_line = '|'.join(parts[:6])
-                        boq_items.append(normalized_line)
-                        logger.debug(f"Found BOQ item: {normalized_line[:120]}...")
-            except Exception as e:
-                logger.warning(f"Error processing batch {batch_num}: {e}")
-                continue
-        
-        logger.info(f"Found {len(boq_items)} BOQ items across all {len(batches)} batches")
-        
-        # Step 4: Deduplicate items (in case of overlap between batches)
-        unique_items = list(dict.fromkeys(boq_items))  # Preserves order, removes duplicates
-        logger.info(f"After deduplication: {len(unique_items)} unique items")
-        
-        # Step 5: Format the final output
+    def _format_boq_output(self, unique_items: List[str], metadata_result: str) -> str:
+        logger.info('Formatting BOQ output...')
         if not unique_items:
-            return f"""## DOCUMENT SUMMARY
+            logger.info('No BOQ items to format')
+            return f'''## DOCUMENT SUMMARY
 {metadata_result}
 
 ## DETAILED BILL OF QUANTITIES
-No BOQ items were found in this document. This may not be a Bill of Quantities document, or the format may not be recognized."""
-        
-        # Determine which columns actually contain values across all items
-        col_headers = ["Item No/Code", "Description", "Quantity", "Unit", "Rate", "Amount"]
+No BOQ items were found in this document.'''
+
+        col_headers = ['Item No/Code', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount']
         cols_present = [False] * 6
         normalized_items = []
         for item in unique_items:
@@ -366,87 +324,89 @@ No BOQ items were found in this document. This may not be a Bill of Quantities d
                 if parts[i] and parts[i].upper() != 'NA':
                     cols_present[i] = True
 
-        # If a column is entirely empty (all NA), omit it from the table
         col_indices = [i for i, present in enumerate(cols_present) if present]
-        # Always include Item No/Code and Description even if missing (fallback)
         if 0 not in col_indices:
             col_indices.insert(0, 0)
         if 1 not in col_indices:
             col_indices.insert(1, 1)
 
-        # Build table header dynamically
-        header_row = "| " + " | ".join([col_headers[i] for i in col_indices]) + " |\n"
-        sep_row = "|" + "|".join(["-" * (len(col_headers[i]) + 2) for i in col_indices]) + "|\n"
+        header_row = '| ' + ' | '.join([col_headers[i] for i in col_indices]) + ' |\n'
+        sep_row = '|' + '|'.join(['-' * (len(col_headers[i]) + 2) for i in col_indices]) + '|\n'
 
-        formatted_boq = f"""## DOCUMENT SUMMARY
+        formatted_boq = f'''## DOCUMENT SUMMARY
 {metadata_result}
 
 ## DETAILED BILL OF QUANTITIES
 **Total Items Found:** {len(unique_items)}
 
-    {header_row}{sep_row}"""
+{header_row}{sep_row}'''
 
         for parts in normalized_items:
-            # Truncate long descriptions
             parts[1] = parts[1][:80] if len(parts[1]) > 80 else parts[1]
             row_vals = [parts[i] for i in col_indices]
-            formatted_boq += "| " + " | ".join(row_vals) + " |\n"
-        
-        # Calculate totals if possible
-        total_amount = 0
-        valid_amounts = 0
-        for item in unique_items:
-            parts = item.split('|')
-            if len(parts) >= 6:
-                try:
-                    amount_str = parts[5].replace(',', '').replace('₹', '').strip()
-                    amount = float(amount_str)
-                    total_amount += amount
-                    valid_amounts += 1
-                except:
-                    pass
-        
-        formatted_boq += f"""
+            formatted_boq += '| ' + ' | '.join(row_vals) + ' |\n'
 
-## SUMMARY
-- **Total Items:** {len(unique_items)}
-"""
+        formatted_boq += f'\n## SUMMARY\n- **Total Items:** {len(unique_items)}\n'
 
-        # Normalize markdown: unify newlines, strip leading spaces, ensure proper table separation
         try:
             s = formatted_boq.replace('\r\n', '\n').replace('\r', '\n')
             lines = [ln.lstrip() for ln in s.split('\n')]
-
-            # Ensure blank line before first table header (line that starts with '| ')
-            header_idx = None
-            for idx, ln in enumerate(lines):
-                if ln.startswith('| '):
-                    header_idx = idx
-                    break
-            if header_idx is not None and header_idx > 0 and lines[header_idx - 1].strip() != '':
+            header_idx = next((i for i, ln in enumerate(lines) if ln.startswith('| ')), None)
+            if header_idx and header_idx > 0 and lines[header_idx - 1].strip():
                 lines.insert(header_idx, '')
-                header_idx += 1
-
-            # Ensure separator row exists immediately after header and is valid
-            if header_idx is not None:
+            if header_idx:
                 sep_idx = header_idx + 1
-                if not (sep_idx < len(lines) and re.match(r"^\|\s*-+", lines[sep_idx])):
-                    # build a simple separator with three dashes per column
+                if not (sep_idx < len(lines) and re.match(r'^\|\s*-+', lines[sep_idx])):
                     cols = [c for c in lines[header_idx].split('|') if c.strip()]
                     sep = '|' + '|'.join(['---' for _ in cols]) + '|'
                     lines.insert(sep_idx, sep)
-
-            # Re-join ensuring each table row is on its own line
             formatted_boq = '\n'.join(lines).strip() + '\n\n'
         except Exception:
-            # If normalization fails, fall back to original
-            formatted_boq = formatted_boq
+            pass
 
-        # (Previously attempted to insert formatted BOQ into vector_store; removed to avoid mutating index)
-
-        logger.info("Comprehensive BOQ extraction completed successfully")
         return formatted_boq
-        
-    except Exception as e:
-        logger.error(f"Error in comprehensive BOQ extraction: {e}")
-        raise
+
+    @retry_with_exponential_backoff(max_retries=3, initial_delay=2)
+    def extract_boq_comprehensive(self, chunks: List[Document], vector_store: FAISS = None) -> str:
+        try:
+            logger.info(f'Starting comprehensive BOQ extraction from {len(chunks)} chunks')
+            logger.info('Extracting document metadata...')
+            metadata_result = self._extract_metadata(chunks)
+            logger.info('Metadata extracted, creating batches...')
+            batches = self._batch_chunks(chunks)
+            logger.info(f'Created {len(batches)} batches')
+            boq_items = []
+            for batch_num, batch_chunks in enumerate(batches, 1):
+                logger.info(f'Processing batch {batch_num}/{len(batches)} ({len(batch_chunks)} chunks)')
+                chunk_texts = [chunk.page_content for chunk in batch_chunks]
+                batch_text = '\n\n'.join(chunk_texts)
+                logger.info(f'Batch text length: {len(batch_text)}')
+                batch_items = self._extract_boq_from_batch(batch_text, batch_chunks, batch_num)
+                boq_items.extend(batch_items)
+                logger.info(f'Batch {batch_num} yielded {len(batch_items)} items')
+            unique_items = list(dict.fromkeys(boq_items))
+            logger.info(f'Found {len(unique_items)} unique BOQ items after deduplication')
+            logger.info('Formatting BOQ output...')
+            formatted_boq = self._format_boq_output(unique_items, metadata_result)
+            logger.info('Comprehensive BOQ extraction completed successfully')
+            return formatted_boq
+        except Exception as e:
+            logger.error(f'Error in comprehensive BOQ extraction: {e}')
+            raise
+
+# Global instance for backward compatibility
+processor = BOQProcessor()
+
+# Backward compatibility functions
+def load_and_process_pdf(pdf_path: str, filename: str = None) -> List[Document]:
+    return processor.load_and_process_pdf(pdf_path, filename)
+
+def create_vector_store(chunks: List[Document]) -> FAISS:
+    return processor.create_vector_store(chunks)
+
+def setup_rag_chain(vector_store: FAISS):
+    return processor.setup_rag_chain(vector_store)
+
+@retry_with_exponential_backoff(max_retries=3, initial_delay=2)
+def extract_boq_comprehensive(chunks: List[Document], vector_store: FAISS = None) -> str:
+    return processor.extract_boq_comprehensive(chunks, vector_store)
