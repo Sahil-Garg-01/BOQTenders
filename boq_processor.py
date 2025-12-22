@@ -89,7 +89,7 @@ class BOQProcessor:
                 headers=headers
             )
             response.raise_for_status()
-            result = response.json().get('text', '')
+            result = response.json().get('result', '')
             logger.info(f'Text extraction completed, response length: {len(result)}')
             return result
 
@@ -107,7 +107,7 @@ class BOQProcessor:
                 headers=headers
             )
             response.raise_for_status()
-            result = response.json().get('tables', [])
+            result = response.json().get('result', [])
             logger.info(f'Table extraction completed, found {len(result)} tables')
             return result
 
