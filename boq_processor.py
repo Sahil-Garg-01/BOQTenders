@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     model_name: str = "gemini-2.5-flash-lite"
     temperature: float = 0.0
     chunk_size: int = 1000
-    chunk_overlap: int = 200
+    chunk_overlap: int = 500
     embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2"
 
 settings = Settings()
@@ -75,7 +75,7 @@ class BOQProcessor:
             md += '| ' + ' | '.join(str(cell) for cell in row) + ' |\n'
         return md
 
-    def _call_extract_text_api(self, pdf_path: str, start_page: int = 1, end_page: int = 10, filename: str = None) -> str:
+    def _call_extract_text_api(self, pdf_path: str, start_page: int = 1, end_page: int = 100, filename: str = None) -> str:
         display_name = filename or os.path.basename(pdf_path)
         logger.info(f'Starting text extraction for {display_name} (pages {start_page}-{end_page})')
         with open(pdf_path, 'rb') as f:
@@ -89,11 +89,16 @@ class BOQProcessor:
                 headers=headers
             )
             response.raise_for_status()
-            result = response.json().get('result', '')
+            json_response = response.json()
+            if isinstance(json_response, dict):
+                result = json_response.get('result', '')
+            else:
+                logger.error(f"Unexpected response format: {json_response}")
+                result = ''
             logger.info(f'Text extraction completed, response length: {len(result)}')
             return result
 
-    def _call_extract_tables_api(self, pdf_path: str, start_page: int = 1, end_page: int = 10, filename: str = None) -> List[dict]:
+    def _call_extract_tables_api(self, pdf_path: str, start_page: int = 1, end_page: int = 2, filename: str = None) -> List[dict]:
         display_name = filename or os.path.basename(pdf_path)
         logger.info(f'Starting table extraction for {display_name} (pages {start_page}-{end_page})')
         with open(pdf_path, 'rb') as f:
@@ -107,8 +112,19 @@ class BOQProcessor:
                 headers=headers
             )
             response.raise_for_status()
-            result = response.json().get('result', [])
-            logger.info(f'Table extraction completed, found {len(result)} tables')
+            json_response = response.json()
+            if isinstance(json_response, dict):
+                result = json_response.get('result', [])
+                # Filter to only include valid table dicts
+                valid_tables = [t for t in result if isinstance(t, dict)]
+                invalid_count = len(result) - len(valid_tables)
+                if invalid_count > 0:
+                    logger.warning(f"Filtered out {invalid_count} invalid tables (not dicts)")
+                result = valid_tables
+            else:
+                logger.error(f"Unexpected response format: {json_response}")
+                result = []
+            logger.info(f'Table extraction completed, found {len(result)} valid tables')
             return result
 
     def load_and_process_pdf(self, pdf_path: str, filename: str = None) -> List[Document]:
@@ -183,9 +199,15 @@ class BOQProcessor:
             logger.info('Using old LangChain API for RAG chain setup')
             ConversationalRetrievalChain, ConversationBufferMemory, PromptTemplate = api_components
             memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
-            qa_template = '''Use the following pieces of context to answer the question at the end.
-If the question is about extracting BOQ, provide a structured list of items including descriptions, quantities, units, rates, and amounts.
-If no BOQ is found, say so.
+            qa_template = '''You are an expert assistant specializing in construction and tender documents, with deep knowledge of Bill of Quantities (BOQ) analysis. Your role is to provide accurate, helpful, and professional responses based solely on the provided context.
+
+Guidelines:
+- Always base your answers on the given context. Do not use external knowledge or assumptions.
+- For BOQ-related questions, provide detailed, structured information including item codes, descriptions, quantities, units, rates, and amounts where available.
+- If the context lacks specific information, respond with: "The requested information is not available in the provided document context."
+- Be concise yet comprehensive. Structure responses clearly (e.g., use bullet points or tables for lists).
+- Handle follow-up questions by referencing previous context in the conversation history.
+- Maintain neutrality and professionalism in all responses.
 
 {context}
 
@@ -214,9 +236,15 @@ Answer:'''
             history_aware_retriever = create_history_aware_retriever(
                 self.llm, vector_store.as_retriever(), contextualize_q_prompt
             )
-            qa_system_prompt = '''Use the following pieces of context to answer the question at the end.
-If the question is about extracting BOQ, provide a structured list of items including descriptions, quantities, units, rates, and amounts.
-If no BOQ is found, say so.
+            qa_system_prompt = '''You are an expert assistant specializing in construction and tender documents, with deep knowledge of Bill of Quantities (BOQ) analysis. Your role is to provide accurate, helpful, and professional responses based solely on the provided context.
+
+Guidelines:
+- Always base your answers on the given context. Do not use external knowledge or assumptions.
+- For BOQ-related questions, provide detailed, structured information including item codes, descriptions, quantities, units, rates, and amounts where available.
+- If the context lacks specific information, respond with: "The requested information is not available in the provided document context."
+- Be concise yet comprehensive. Structure responses clearly (e.g., use bullet points or tables for lists).
+- Handle follow-up questions by referencing previous context in the conversation history.
+- Maintain neutrality and professionalism in all responses.
 
 {context}'''
             qa_prompt = ChatPromptTemplate.from_messages([
