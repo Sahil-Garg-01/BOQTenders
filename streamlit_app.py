@@ -13,6 +13,10 @@ if "qa_chain" not in st.session_state:
     st.session_state.qa_chain = None
 if "extracted_boq" not in st.session_state:
     st.session_state.extracted_boq = None
+if "chunks" not in st.session_state:
+    st.session_state.chunks = None
+if "vector_store" not in st.session_state:
+    st.session_state.vector_store = None
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
@@ -49,6 +53,8 @@ if uploaded_file is not None:
                 # Store in session
                 st.session_state.qa_chain = qa_chain
                 st.session_state.extracted_boq = extracted_boq
+                st.session_state.chunks = chunks
+                st.session_state.vector_store = vector_store
                 st.session_state.messages = []  # reset chat history
 
                 st.success("✅ BOQ generated successfully!")
@@ -80,6 +86,22 @@ if st.session_state.extracted_boq:
         file_name="BOQ_extracted.txt",
         mime="text/plain"
     )
+
+    # Add consistency check button
+    if st.button("🔍 Check LLM Consistency"):
+        with st.spinner("Running consistency check..."):
+            try:
+                consistency = boq_processor.check_consistency(st.session_state.chunks, st.session_state.vector_store, runs=4)
+                st.success(f"✅ Consistency Check Complete")
+                st.write(f"**Consistency Score:** {consistency['consistency_score']}%")
+                st.write(f"**Successful Runs:** {consistency['successful_runs']}/{consistency['runs']}")
+                st.write(f"**Average Similarity:** {consistency['avg_similarity']:.2f}")
+                if consistency['consistency_score'] < 80:
+                    st.warning("⚠️ Low consistency detected. LLM outputs vary significantly—consider reviewing extractions.")
+            except Exception as e:
+                st.error(f"Consistency check failed: {e}")
+
+    st.divider()
 
     # -------------------------------
     # Chat Interface

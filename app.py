@@ -11,6 +11,7 @@ app = FastAPI(title="BOQ Chatbot API", description="API for extracting and query
 # Global variables for chain and vector store
 vector_store = None
 qa_chain = None
+chunks = None
 
 class ChatRequest(BaseModel):
     question: str
@@ -29,6 +30,7 @@ async def upload_pdf(file: UploadFile = File(...)) -> Dict[str, Any]:
             shutil.copyfileobj(file.file, buffer)
         
         logger.info(f"Processing uploaded PDF: {file.filename}")
+        global chunks
         chunks = boq_processor.load_and_process_pdf(pdf_path, filename=file.filename)
         vector_store = boq_processor.create_vector_store(chunks)
         qa_chain = boq_processor.setup_rag_chain(vector_store)
@@ -108,6 +110,31 @@ async def chat(request: ChatRequest) -> Dict[str, str]:
         logger.error(f"Error in chat: {error_msg}")
         
         # Check if it's a rate limit error and provide specific guidance
+        if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
+            raise HTTPException(
+                status_code=429, 
+                detail="API rate limit exceeded. Please try again later or upgrade your API plan. See https://ai.google.dev/gemini-api/docs/rate-limits"
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/consistency", summary="Check Consistency", description="Run multiple BOQ extractions to check LLM output consistency.")
+async def get_consistency() -> Dict[str, Any]:
+    global chunks, vector_store
+    if not chunks or not vector_store:
+        logger.warning("Consistency check attempted without uploaded PDF")
+        raise HTTPException(status_code=400, detail="No PDF uploaded. Please upload a PDF first using /upload")
+    
+    try:
+        logger.info("Running consistency check")
+        consistency_result = boq_processor.check_consistency(chunks, vector_store, runs=4)
+        logger.info(f"Consistency check completed: {consistency_result}")
+        return {"status": "success", "consistency": consistency_result}
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error in consistency check: {error_msg}")
+        
+        # Check if it's a rate limit error
         if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
             raise HTTPException(
                 status_code=429, 

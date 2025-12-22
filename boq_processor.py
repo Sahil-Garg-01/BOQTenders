@@ -65,6 +65,8 @@ class BOQProcessor:
         self.lc_old_api: Optional[bool] = None
 
     def _table_to_markdown(self, table: dict) -> str:
+        # Commented out: Table extraction not needed for now
+        """
         headers = table.get('headers', [])
         rows = table.get('rows', [])
         if not headers:
@@ -74,6 +76,7 @@ class BOQProcessor:
         for row in rows:
             md += '| ' + ' | '.join(str(cell) for cell in row) + ' |\n'
         return md
+        """
 
     def _call_extract_text_api(self, pdf_path: str, start_page: int = 1, end_page: int = 100, filename: str = None) -> str:
         display_name = filename or os.path.basename(pdf_path)
@@ -99,6 +102,8 @@ class BOQProcessor:
             return result
 
     def _call_extract_tables_api(self, pdf_path: str, start_page: int = 1, end_page: int = 2, filename: str = None) -> List[dict]:
+        # Commented out: Table extraction not needed for now
+        """
         display_name = filename or os.path.basename(pdf_path)
         logger.info(f'Starting table extraction for {display_name} (pages {start_page}-{end_page})')
         with open(pdf_path, 'rb') as f:
@@ -126,6 +131,7 @@ class BOQProcessor:
                 result = []
             logger.info(f'Table extraction completed, found {len(result)} valid tables')
             return result
+        """
 
     def load_and_process_pdf(self, pdf_path: str, filename: str = None) -> List[Document]:
         try:
@@ -138,6 +144,8 @@ class BOQProcessor:
                 logger.info(f'Text preview: {extracted_text[:200]}...')
             else:
                 logger.warning('Extracted text is empty')
+            # Commented out: Table extraction not needed for now
+            """
             logger.info('Calling table extraction API...')
             tables = self._call_extract_tables_api(pdf_path, filename=filename)
             logger.info(f'Extracted {len(tables)} tables')
@@ -145,6 +153,8 @@ class BOQProcessor:
             table_texts = [self._table_to_markdown(table) for table in tables]
             logger.info(f'Converted {len(table_texts)} tables to markdown')
             full_content = extracted_text + '\n\n' + '\n\n'.join(table_texts)
+            """
+            full_content = extracted_text
             logger.info(f'Combined content length: {len(full_content)}')
             logger.info('Splitting content into chunks...')
             chunks = self.text_splitter.create_documents([full_content])
@@ -421,6 +431,37 @@ No BOQ items were found in this document.'''
         except Exception as e:
             logger.error(f'Error in comprehensive BOQ extraction: {e}')
             raise
+
+def check_consistency(chunks: List[Document], vector_store: FAISS, runs: int = 4) -> dict:
+    """Run extraction multiple times and compute variance."""
+    from difflib import SequenceMatcher
+    
+    results = []
+    for _ in range(runs):
+        try:
+            boq = extract_boq_comprehensive(chunks, vector_store)
+            results.append(boq)
+        except Exception as e:
+            logger.warning(f"Consistency run failed: {e}")
+            results.append("")
+    
+    # Variance: Average similarity between pairs
+    similarities = []
+    for i in range(len(results)):
+        for j in range(i+1, len(results)):
+            if results[i] and results[j]:
+                sim = SequenceMatcher(None, results[i], results[j]).ratio()
+                similarities.append(sim)
+    
+    avg_similarity = sum(similarities) / len(similarities) if similarities else 0
+    consistency_score = avg_similarity * 100
+    
+    return {
+        "consistency_score": round(consistency_score, 2),
+        "runs": runs,
+        "successful_runs": len([r for r in results if r]),
+        "avg_similarity": round(avg_similarity, 2)
+    }
 
 # Global instance for backward compatibility
 processor = BOQProcessor()
