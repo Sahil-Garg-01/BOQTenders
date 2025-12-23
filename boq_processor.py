@@ -477,8 +477,8 @@ def check_consistency(chunks: List[Document], vector_store: FAISS, runs: int = 4
                 if '|' in line and 'Confidence' in line and not line.startswith('| ---'):
                     # Header row: find index of Confidence
                     parts = [p.strip() for p in line.split('|')[1:-1]]
-                    if 'Confidence' in parts:
-                        confidence_idx = parts.index('Confidence')
+                    confidence_idx = next((i for i, p in enumerate(parts) if 'Confidence' in p), None)
+                    if confidence_idx is not None:
                         break
             if confidence_idx is not None:
                 for line in lines:
