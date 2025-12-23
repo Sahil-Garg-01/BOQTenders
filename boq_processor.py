@@ -269,15 +269,18 @@ Guidelines:
 
     def _extract_metadata(self, chunks: List[Document]) -> str:
         metadata_text = '\n\n'.join([chunk.page_content for chunk in chunks[:3]])
-        metadata_prompt = f'''Analyze this tender document excerpt and extract:
-1. Document Type (e.g., Civil BOQ, Electrical BOQ, etc.)
-2. Project Name
-3. Any other relevant project information
+        metadata_prompt = f'''Extract key information from this tender document excerpt in a concise format:
+- Document Type
+- Project Name
+- Issuing Authority
+- Tender Number
+- Date
+- Location
 
 Document excerpt:
 {metadata_text[:2000]}
 
-Provide a brief summary.'''
+Output only the facts, no extra analysis.'''
         logger.info('Invoking LLM for metadata extraction...')
         result = str(self.llm.invoke(metadata_prompt))
         logger.info('Metadata extraction completed')
@@ -352,7 +355,7 @@ Extract only actual BOQ line items.'''
 ## DETAILED BILL OF QUANTITIES
 No BOQ items were found in this document.'''
 
-        col_headers = ['Item No/Code', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount', 'Confidence']
+        col_headers = ['Item No/Code', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount', 'Confidence Score']
         cols_present = [False] * 7
         normalized_items = []
         for item in unique_items:
@@ -384,6 +387,11 @@ No BOQ items were found in this document.'''
         for parts in normalized_items:
             parts[1] = parts[1][:80] if len(parts[1]) > 80 else parts[1]
             row_vals = [parts[i] for i in col_indices]
+            # Add % to confidence score if present
+            if 6 in col_indices:
+                conf_idx = col_indices.index(6)
+                if row_vals[conf_idx] != 'NA':
+                    row_vals[conf_idx] += '%'
             formatted_boq += '| ' + ' | '.join(row_vals) + ' |\n'
 
         formatted_boq += f'\n## SUMMARY\n- **Total Items:** {len(unique_items)}\n'
