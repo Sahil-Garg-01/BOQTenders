@@ -298,7 +298,9 @@ Look for structured data with:
 - Total amounts
 
 If you find BOQ items, return them in this EXACT format (pipe-separated):
-ITEM_CODE|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT
+ITEM_CODE|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
+
+Where CONFIDENCE is a score (0-100%) based on how clearly the data appears in the text.
 
 Rules for columns:
 - If an entire column has no values, omit that column.
@@ -328,12 +330,12 @@ Extract only actual BOQ line items.'''
                 if not line or '|' not in line:
                     continue
                 parts = [p.strip() for p in line.split('|')]
-                if len(parts) < 6:
-                    parts += ['NA'] * (6 - len(parts))
+                if len(parts) < 7:
+                    parts += ['NA'] * (7 - len(parts))
                 source_tag = f'p.{batch_num}'
                 if parts[1] and '(' not in parts[1]:
                     parts[1] = f'{parts[1]} ({source_tag})'
-                boq_items.append('|'.join(parts[:6]))
+                boq_items.append('|'.join(parts[:7]))
             logger.info(f'Extracted {len(boq_items)} BOQ items from batch {batch_num}')
             return boq_items
         except Exception as e:
@@ -350,15 +352,15 @@ Extract only actual BOQ line items.'''
 ## DETAILED BILL OF QUANTITIES
 No BOQ items were found in this document.'''
 
-        col_headers = ['Item No/Code', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount']
-        cols_present = [False] * 6
+        col_headers = ['Item No/Code', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount', 'Confidence']
+        cols_present = [False] * 7
         normalized_items = []
         for item in unique_items:
             parts = [p.strip() for p in item.split('|')]
-            if len(parts) < 6:
-                parts += ['NA'] * (6 - len(parts))
-            normalized_items.append(parts[:6])
-            for i in range(6):
+            if len(parts) < 7:
+                parts += ['NA'] * (7 - len(parts))
+            normalized_items.append(parts[:7])
+            for i in range(7):
                 if parts[i] and parts[i].upper() != 'NA':
                     cols_present[i] = True
 
@@ -456,11 +458,44 @@ def check_consistency(chunks: List[Document], vector_store: FAISS, runs: int = 4
     avg_similarity = sum(similarities) / len(similarities) if similarities else 0
     consistency_score = avg_similarity * 100
     
+    # Average confidence from per-item scores
+    all_confidences = []
+    for boq in results:
+        if boq:
+            lines = boq.split('\n')
+            confidence_idx = None
+            for line in lines:
+                line = line.strip()
+                if '|' in line and 'Confidence' in line and not line.startswith('| ---'):
+                    # Header row: find index of Confidence
+                    parts = [p.strip() for p in line.split('|')[1:-1]]
+                    if 'Confidence' in parts:
+                        confidence_idx = parts.index('Confidence')
+                        break
+            if confidence_idx is not None:
+                for line in lines:
+                    if '|' in line and not line.startswith('| ---') and 'Confidence' not in line:
+                        parts = [p.strip() for p in line.split('|')[1:-1]]
+                        if len(parts) > confidence_idx:
+                            try:
+                                conf_str = parts[confidence_idx]
+                                if conf_str and conf_str != 'NA':
+                                    # Remove % if present
+                                    conf_str = conf_str.rstrip('%')
+                                    conf = float(conf_str)
+                                    all_confidences.append(conf)
+                            except (ValueError, IndexError):
+                                pass
+    
+    avg_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0
+    
     return {
         "consistency_score": round(consistency_score, 2),
         "runs": runs,
         "successful_runs": len([r for r in results if r]),
-        "avg_similarity": round(avg_similarity, 2)
+        "avg_similarity": round(avg_similarity, 2),
+        "avg_confidence": round(avg_confidence, 2),  # New metric
+        "total_confidence_scores": len(all_confidences)
     }
 
 # Global instance for backward compatibility

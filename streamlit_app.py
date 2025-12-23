@@ -88,14 +88,14 @@ if st.session_state.extracted_boq:
     )
 
     # Add consistency check button
-    if st.button("🔍 Check LLM Consistency"):
+    if st.button("🔍 Check BOQ Reliability"):
         with st.spinner("Running consistency check..."):
             try:
                 consistency = boq_processor.check_consistency(st.session_state.chunks, st.session_state.vector_store, runs=4)
                 st.success(f"✅ Consistency Check Complete")
                 st.write(f"**Consistency Score:** {consistency['consistency_score']}%")
                 st.write(f"**Successful Runs:** {consistency['successful_runs']}/{consistency['runs']}")
-                st.write(f"**Average Similarity:** {consistency['avg_similarity']:.2f}")
+                st.write(f"**Average Confidence:** {consistency['avg_confidence']:.2f} (from {consistency['total_confidence_scores']} scores)")
                 if consistency['consistency_score'] < 80:
                     st.warning("⚠️ Low consistency detected. LLM outputs vary significantly—consider reviewing extractions.")
             except Exception as e:
