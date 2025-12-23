@@ -303,7 +303,7 @@ Look for structured data with:
 If you find BOQ items, return them in this EXACT format (pipe-separated):
 ITEM_CODE|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
 
-Where CONFIDENCE is a score (0-100%) based on how clearly the data appears in the text.
+Where CONFIDENCE is a score (0-100%) based on how clearly and completely the data appears in the text. Use lower scores (e.g., 70-90%) if information is partially missing, inferred, or unclear. Use 100% only for complete, directly stated data.
 
 Rules for columns:
 - If an entire column has no values, omit that column.
