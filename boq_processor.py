@@ -335,10 +335,19 @@ Extract only actual BOQ line items.'''
                 parts = [p.strip() for p in line.split('|')]
                 if len(parts) < 7:
                     parts += ['NA'] * (7 - len(parts))
-                source_tag = f'p.{batch_num}'
-                if parts[1] and '(' not in parts[1]:
-                    parts[1] = f'{parts[1]} ({source_tag})'
-                boq_items.append('|'.join(parts[:7]))
+                # Temp source
+                parts.append("Unknown")
+                # Per-item page detection
+                desc = parts[1]
+                search_str = desc[:30].strip()
+                pos = batch_text.find(search_str)
+                if pos != -1:
+                    marker_pattern = r"(?i)(?:---\s*)?page\s+(\d+)(?:\s*---)?"
+                    matches = list(re.finditer(marker_pattern, batch_text[:pos]))
+                    if matches:
+                        page = matches[-1].group(1)
+                        parts[7] = f"Page {page}"
+                boq_items.append('|'.join(parts[:8]))
             logger.info(f'Extracted {len(boq_items)} BOQ items from batch {batch_num}')
             return boq_items
         except Exception as e:
@@ -355,15 +364,15 @@ Extract only actual BOQ line items.'''
 ## DETAILED BILL OF QUANTITIES
 No BOQ items were found in this document.'''
 
-        col_headers = ['Item No/Code', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount', 'Confidence Score']
-        cols_present = [False] * 7
+        col_headers = ['Item No/Code', 'Description', 'Quantity', 'Unit', 'Rate', 'Amount', 'Confidence Score', 'Source']
+        cols_present = [False] * 8
         normalized_items = []
         for item in unique_items:
             parts = [p.strip() for p in item.split('|')]
-            if len(parts) < 7:
-                parts += ['NA'] * (7 - len(parts))
-            normalized_items.append(parts[:7])
-            for i in range(7):
+            if len(parts) < 8:
+                parts += ['NA'] * (8 - len(parts))
+            normalized_items.append(parts[:8])
+            for i in range(8):
                 if parts[i] and parts[i].upper() != 'NA':
                     cols_present[i] = True
 
@@ -386,12 +395,13 @@ No BOQ items were found in this document.'''
 
         for parts in normalized_items:
             parts[1] = parts[1][:80] if len(parts[1]) > 80 else parts[1]
+            parts[7] = parts[7][:50] if len(parts[7]) > 50 else parts[7]  # Truncate source if too long
             row_vals = [parts[i] for i in col_indices]
             # Add % to confidence score if present
             if 6 in col_indices:
                 conf_idx = col_indices.index(6)
                 if row_vals[conf_idx] != 'NA':
-                    row_vals[conf_idx] += '%'
+                    row_vals[conf_idx] = row_vals[conf_idx].rstrip('%') + '%'
             formatted_boq += '| ' + ' | '.join(row_vals) + ' |\n'
 
         formatted_boq += f'\n## SUMMARY\n- **Total Items:** {len(unique_items)}\n'
