@@ -294,7 +294,7 @@ Output only the facts, no extra analysis.'''
 
 Look for structured data with:
 - Item numbers or codes
-- Descriptions of work/materials
+- Descriptions of work/materials (extract the complete, full description as it appears in the document, without truncation)
 - Quantities
 - Units (Nos, Sqm, Cum, m, etc.)
 - Rates/Unit prices
@@ -303,7 +303,8 @@ Look for structured data with:
 If you find BOQ items, return them in this EXACT format (pipe-separated):
 ITEM_CODE|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
 
-Where CONFIDENCE is a score (0-100%) based on how clearly and completely the data appears in the text. Use lower scores (e.g., 70-90%) if information is partially missing, inferred, or unclear. Use 100% only for complete, directly stated data.
+Where:
+- CONFIDENCE is a score (0-100%) based on how clearly and completely the data appears in the text. Use lower scores (e.g., 70-90%) if information is partially missing, inferred, or unclear. Use 100% only for complete, directly stated data.
 
 Rules for columns:
 - If an entire column has no values, omit that column.
@@ -339,8 +340,9 @@ Extract only actual BOQ line items.'''
                 parts.append("Unknown")
                 # Per-item page detection
                 desc = parts[1]
-                search_str = desc[:30].strip()
-                pos = batch_text.find(search_str)
+                search_str = desc[:30].strip().lower()
+                batch_text_lower = batch_text.lower()
+                pos = batch_text_lower.rfind(search_str)
                 if pos != -1:
                     marker_pattern = r"(?i)(?:---\s*)?page\s+(\d+)(?:\s*---)?"
                     matches = list(re.finditer(marker_pattern, batch_text[:pos]))
@@ -394,7 +396,7 @@ No BOQ items were found in this document.'''
 {header_row}{sep_row}'''
 
         for parts in normalized_items:
-            parts[1] = parts[1][:80] if len(parts[1]) > 80 else parts[1]
+            # parts[1] remains full for complete descriptions
             parts[7] = parts[7][:50] if len(parts[7]) > 50 else parts[7]  # Truncate source if too long
             row_vals = [parts[i] for i in col_indices]
             # Add % to confidence score if present
@@ -402,9 +404,12 @@ No BOQ items were found in this document.'''
                 conf_idx = col_indices.index(6)
                 if row_vals[conf_idx] != 'NA':
                     row_vals[conf_idx] = row_vals[conf_idx].rstrip('%') + '%'
+                    # Align confidence with source: if source unknown, set confidence to N/A
+                    if parts[7] == "Unknown":
+                        row_vals[conf_idx] = "N/A"
             formatted_boq += '| ' + ' | '.join(row_vals) + ' |\n'
 
-        formatted_boq += f'\n## SUMMARY\n- **Total Items:** {len(unique_items)}\n'
+        # formatted_boq += f'\n## SUMMARY\n- **Total Items:** {len(unique_items)}\n'
 
         try:
             s = formatted_boq.replace('\r\n', '\n').replace('\r', '\n')
