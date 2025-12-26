@@ -78,30 +78,8 @@ async def chat(request: ChatRequest) -> Dict[str, str]:
     try:
         logger.info(f"Processing chat question: {request.question}")
         
-        # For old API with ConversationBufferMemory, we need to ensure memory is in correct state
-        # Clear any accumulated state from extraction to avoid format conflicts
-        if boq_processor.LC_OLD_API is True:
-            # Old LangChain API (0.1.x): ConversationalRetrievalChain with ConversationBufferMemory
-            # Reset memory to avoid format conflicts from previous extraction
-            if hasattr(qa_chain, 'memory') and hasattr(qa_chain.memory, 'clear'):
-                qa_chain.memory.clear()
-                logger.debug("Cleared conversation memory before chat")
-            
-            result = qa_chain({"question": request.question})
-        elif boq_processor.LC_OLD_API is False:
-            # New LangChain API (1.x): create_retrieval_chain expects explicit 'input' and 'chat_history' keys
-            result = qa_chain.invoke({"question": request.question, "chat_history": []})
-        else:
-            # Fallback: try to determine based on available methods
-            logger.warning("LC_OLD_API not set, attempting auto-detection")
-            try:
-                # Try new API first (has invoke method)
-                result = qa_chain.invoke({"question": request.question, "chat_history": []})
-            except (TypeError, KeyError, AttributeError):
-                # Fall back to old API (has __call__ method and memory-based chat_history)
-                if hasattr(qa_chain, 'memory') and hasattr(qa_chain.memory, 'clear'):
-                    qa_chain.memory.clear()
-                result = qa_chain({"question": request.question})
+        # Use old LangChain API (0.1.x) directly
+        result = qa_chain({"question": request.question})
         
         logger.info("Chat response generated")
         return {"answer": result["answer"]}

@@ -7,7 +7,6 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_google_genai import GoogleGenerativeAI
-import importlib
 import time
 from functools import wraps
 import re
@@ -62,7 +61,6 @@ class BOQProcessor:
             chunk_size=self.settings.chunk_size,
             chunk_overlap=self.settings.chunk_overlap
         )
-        self.lc_old_api: Optional[bool] = None
 
     def _table_to_markdown(self, table: dict) -> str:
         # Commented out: Table extraction not needed for now
@@ -177,39 +175,13 @@ class BOQProcessor:
             logger.error(f'Error creating vector store: {e}')
             raise
 
-    def _detect_langchain_api(self):
-        logger.info('Detecting LangChain API version...')
-        try:
-            conv_module = importlib.import_module('langchain_classic.chains')
-            if hasattr(conv_module, 'ConversationalRetrievalChain'):
-                self.lc_old_api = True
-                logger.info('Detected LangChain classic API (0.1.x)')
-                from langchain_classic.chains import ConversationalRetrievalChain
-                from langchain_classic.memory import ConversationBufferMemory
-                from langchain_core.prompts import PromptTemplate
-                return ConversationalRetrievalChain, ConversationBufferMemory, PromptTemplate
-        except ImportError:
-            pass
-        try:
-            create_retrieval_chain = importlib.import_module('langchain.chains').create_retrieval_chain
-            create_history_aware_retriever = importlib.import_module('langchain.chains').create_history_aware_retriever
-            create_stuff_documents_chain = importlib.import_module('langchain.chains').create_stuff_documents_chain
-            from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-            self.lc_old_api = False
-            logger.info('Detected LangChain new API (1.x)')
-            return create_retrieval_chain, create_history_aware_retriever, create_stuff_documents_chain, ChatPromptTemplate, MessagesPlaceholder
-        except ImportError as e:
-            logger.error('Unsupported LangChain version')
-            raise RuntimeError('Unsupported LangChain version. Install 0.1.x or 1.x series.') from e
-
     def setup_rag_chain(self, vector_store: FAISS):
-        logger.info('Setting up RAG chain')
-        api_components = self._detect_langchain_api()
-        if self.lc_old_api:
-            logger.info('Using old LangChain API for RAG chain setup')
-            ConversationalRetrievalChain, ConversationBufferMemory, PromptTemplate = api_components
-            memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
-            qa_template = '''You are an expert assistant specializing in construction and tender documents, with deep knowledge of Bill of Quantities (BOQ) analysis. Your role is to provide accurate, helpful, and professional responses based solely on the provided context.
+        logger.info('Setting up RAG chain with LangChain classic API (0.1.x)')
+        from langchain_classic.chains import ConversationalRetrievalChain
+        from langchain_classic.memory import ConversationBufferMemory
+        from langchain_core.prompts import PromptTemplate
+        memory = ConversationBufferMemory(memory_key='chat_history', return_messages=True)
+        qa_template = '''You are an expert assistant specializing in construction and tender documents, with deep knowledge of Bill of Quantities (BOQ) analysis. Your role is to provide accurate, helpful, and professional responses based solely on the provided context.
 
 Guidelines:
 - Always base your answers on the given context. Do not use external knowledge or assumptions.
@@ -223,48 +195,14 @@ Guidelines:
 
 Question: {question}
 Answer:'''
-            qa_prompt = PromptTemplate.from_template(qa_template)
-            qa_chain = ConversationalRetrievalChain.from_llm(
-                llm=self.llm,
-                retriever=vector_store.as_retriever(),
-                memory=memory,
-                combine_docs_chain_kwargs={'prompt': qa_prompt},
-            )
-        else:
-            logger.info('Using new LangChain API for RAG chain setup')
-            create_retrieval_chain, create_history_aware_retriever, create_stuff_documents_chain, ChatPromptTemplate, MessagesPlaceholder = api_components
-            contextualize_q_system_prompt = (
-                'Given a chat history and the latest user question which might reference context in the chat history, '
-                'formulate a standalone question which can be understood without the chat history. Do not answer the question, '
-                'just reformulate it if needed and otherwise return it as is.'
-            )
-            contextualize_q_prompt = ChatPromptTemplate.from_messages([
-                ('system', contextualize_q_system_prompt),
-                MessagesPlaceholder('chat_history'),
-                ('human', '{input}'),
-            ])
-            history_aware_retriever = create_history_aware_retriever(
-                self.llm, vector_store.as_retriever(), contextualize_q_prompt
-            )
-            qa_system_prompt = '''You are an expert assistant specializing in construction and tender documents, with deep knowledge of Bill of Quantities (BOQ) analysis. Your role is to provide accurate, helpful, and professional responses based solely on the provided context.
-
-Guidelines:
-- Always base your answers on the given context. Do not use external knowledge or assumptions.
-- For BOQ-related questions, provide detailed, structured information including item codes, descriptions, quantities, units, rates, and amounts where available.
-- If the context lacks specific information, respond with: "The requested information is not available in the provided document context."
-- Be concise yet comprehensive. Structure responses clearly (e.g., use bullet points or tables for lists).
-- Handle follow-up questions by referencing previous context in the conversation history.
-- Maintain neutrality and professionalism in all responses.
-
-{context}'''
-            qa_prompt = ChatPromptTemplate.from_messages([
-                ('system', qa_system_prompt),
-                MessagesPlaceholder('chat_history'),
-                ('human', '{input}'),
-            ])
-            question_answer_chain = create_stuff_documents_chain(self.llm, qa_prompt)
-            qa_chain = create_retrieval_chain(history_aware_retriever, question_answer_chain)
-        logger.info(f'RAG chain set up successfully ({"old" if self.lc_old_api else "new"} API)')
+        qa_prompt = PromptTemplate.from_template(qa_template)
+        qa_chain = ConversationalRetrievalChain.from_llm(
+            llm=self.llm,
+            retriever=vector_store.as_retriever(),
+            memory=memory,
+            combine_docs_chain_kwargs={'prompt': qa_prompt},
+        )
+        logger.info('RAG chain set up successfully with LangChain classic API')
         return qa_chain
 
     def _extract_metadata(self, chunks: List[Document]) -> str:
