@@ -1,143 +1,310 @@
-import streamlit as st
+"""
+BOQTenders Streamlit Application
+
+Interactive web interface for BOQ extraction and document chat.
+
+Usage:
+    streamlit run streamlit_app_new.py
+"""
+import sys
+from pathlib import Path
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent))
+
 import tempfile
-import os
-import boq_processor
+import streamlit as st
+from loguru import logger
 
-st.set_page_config(page_title="BOQ Agent", page_icon="📄", layout="wide")
+from config.settings import settings
+from core.pdf_extractor import PDFExtractor
+from core.embeddings import EmbeddingService
+from core.rag_chain import RAGChainBuilder
+from services.boq_extractor import BOQExtractor
+from services.consistency import ConsistencyChecker
 
-st.title("BOQ Agent")
-st.markdown("Upload a tender PDF to extract the Bill of Quantities (BOQ) and chat with the document.")
+# Configure logging
+logger.remove()
+logger.add(
+    sys.stderr,
+    level=settings.log_level,
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
+)
 
-# Initialize session state
-if "qa_chain" not in st.session_state:
-    st.session_state.qa_chain = None
-if "extracted_boq" not in st.session_state:
-    st.session_state.extracted_boq = None
-if "chunks" not in st.session_state:
-    st.session_state.chunks = None
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = None
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
+def initialize_services():
+    """Initialize all services (cached)."""
+    if "services_initialized" not in st.session_state:
+        st.session_state.pdf_extractor = PDFExtractor()
+        st.session_state.embedding_service = EmbeddingService()
+        st.session_state.rag_builder = RAGChainBuilder()
+        st.session_state.boq_extractor = BOQExtractor()
+        st.session_state.consistency_checker = ConsistencyChecker()
+        st.session_state.services_initialized = True
 
-# Sidebar
-with st.sidebar:
-    st.header("About")
-    st.markdown("""
-    - Upload a PDF containing BOQ data.
-    - Automatically extract the BOQ.
-    - Ask questions about the document.
-    """)
 
-# File uploader
-uploaded_file = st.file_uploader("Choose a PDF file", type="pdf")
+def initialize_session_state():
+    """Initialize Streamlit session state variables."""
+    defaults = {
+        "boq_output": None,
+        "qa_chain": None,
+        "vector_store": None,
+        "chunks": None,
+        "chat_history": [],
+        "document_loaded": False,
+    }
+    
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
 
-if uploaded_file is not None:
-    if st.button("Generate BOQ"):
-        with st.spinner("Generating BOQ..."):
-            # Save uploaded file to a temp file
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(uploaded_file.getvalue())
-                tmp_path = tmp_file.name
+
+def process_pdf(uploaded_file) -> bool:
+    """
+    Process uploaded PDF file.
+    
+    Returns:
+        True if processing succeeded, False otherwise.
+    """
+    try:
+        with st.spinner("Processing PDF..."):
+            # Save to temp file
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+                temp_file.write(uploaded_file.getvalue())
+                temp_path = temp_file.name
             
             try:
-                # Process
-                chunks = boq_processor.load_and_process_pdf(tmp_path, filename=uploaded_file.name)
-                vector_store = boq_processor.create_vector_store(chunks)
-                qa_chain = boq_processor.setup_rag_chain(vector_store)
+                # Extract text
+                st.info("Extracting text from PDF...")
+                text = st.session_state.pdf_extractor.extract_text(temp_path, filename=uploaded_file.name)
                 
-                # Use comprehensive extraction for complete BOQ coverage
-                extracted_boq = boq_processor.extract_boq_comprehensive(chunks, vector_store)
+                if not text:
+                    st.error("Could not extract text from PDF")
+                    return False
+                
+                # Create embeddings
+                st.info("Creating embeddings...")
+                chunks = st.session_state.embedding_service.split_text(text)
+                vector_store = st.session_state.embedding_service.create_vector_store(chunks)
+                
+                # Extract BOQ
+                st.info("Extracting BOQ items...")
+                boq_output = st.session_state.boq_extractor.extract(chunks, vector_store)
+                
+                # Build QA chain
+                st.info("Building chat interface...")
+                qa_chain = st.session_state.rag_builder.build(vector_store)
                 
                 # Store in session
-                st.session_state.qa_chain = qa_chain
-                st.session_state.extracted_boq = extracted_boq
                 st.session_state.chunks = chunks
                 st.session_state.vector_store = vector_store
-                st.session_state.messages = []  # reset chat history
-
-                st.success("✅ BOQ generated successfully!")
-            except Exception as e:
-                error_msg = str(e)
-                if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg or "quota" in error_msg.lower():
-                    st.error(f"⚠️ API Rate Limit Exceeded: You've hit the daily quota limit. Please try again later or upgrade your API plan. See https://ai.google.dev/gemini-api/docs/rate-limits")
-                else:
-                    st.error(f"Error processing PDF: {error_msg}")
+                st.session_state.boq_output = boq_output
+                st.session_state.qa_chain = qa_chain
+                st.session_state.document_loaded = True
+                st.session_state.chat_history = []
+                
+                st.success(f"✅ Processed {len(chunks)} document chunks")
+                return True
+                
             finally:
-                os.unlink(tmp_path)
+                Path(temp_path).unlink(missing_ok=True)
+                
+    except Exception as e:
+        logger.error(f"Error processing PDF: {e}")
+        st.error(f"Error processing PDF: {str(e)}")
+        return False
 
-# Display extracted BOQ
-if st.session_state.extracted_boq:
-    st.subheader("📊 Extracted Bill of Quantities")
-    
-    # Parse and display the extracted BOQ with better formatting
-    boq_text = st.session_state.extracted_boq
-    
-    # Display as markdown for better rendering
-    st.markdown(boq_text)
-    
-    st.divider()
-    
-    # Add a download button for the BOQ below
-    st.download_button(
-        label="📥 Download BOQ as Text",
-        data=boq_text,
-        file_name="BOQ_extracted.txt",
-        mime="text/plain"
-    )
 
-    # Add consistency check button
-    if st.button("🔍 Check BOQ Reliability"):
-        with st.spinner("Running consistency check..."):
+def render_chat_interface():
+    """Render the chat interface."""
+    st.subheader("💬 Chat with Document")
+    
+    if not st.session_state.document_loaded:
+        st.info("Please upload a PDF to enable chat")
+        return
+    
+    # Chat history
+    for message in st.session_state.chat_history:
+        role = message["role"]
+        content = message["content"]
+        
+        if role == "user":
+            st.chat_message("user").write(content)
+        else:
+            st.chat_message("assistant").write(content)
+    
+    # Chat input
+    if prompt := st.chat_input("Ask a question about the document..."):
+        st.session_state.chat_history.append({"role": "user", "content": prompt})
+        st.chat_message("user").write(prompt)
+        
+        with st.spinner("Thinking..."):
             try:
-                consistency = boq_processor.check_consistency(st.session_state.chunks, st.session_state.vector_store, runs=4)
-                st.success(f"✅ Consistency Check Complete")
-                st.write(f"**Consistency Score:** {consistency['consistency_score']}%")
-                st.write(f"**Successful Runs:** {consistency['successful_runs']}/{consistency['runs']}")
-                st.write(f"**Average Confidence:** {consistency['avg_confidence']:.2f} (from {consistency['total_confidence_scores']} scores)")
-                if consistency['consistency_score'] < 80:
-                    st.warning("⚠️ Low consistency detected. LLM outputs vary significantly—consider reviewing extractions.")
+                response = st.session_state.qa_chain({"question": prompt})
+                answer = response.get("answer", "I couldn't find an answer.")
+                
+                st.session_state.chat_history.append({"role": "assistant", "content": answer})
+                st.chat_message("assistant").write(answer)
+                
             except Exception as e:
-                st.error(f"Consistency check failed: {e}")
+                logger.error(f"Chat error: {e}")
+                error_msg = f"Error: {str(e)}"
+                st.session_state.chat_history.append({"role": "assistant", "content": error_msg})
+                st.chat_message("assistant").write(error_msg)
 
-    st.divider()
 
-    # -------------------------------
-    # Chat Interface
-    # -------------------------------
-    st.subheader("💬 Chat with your BOQ")
-
-    # Display previous chat messages
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.markdown(message["content"])
-
-    # User input
-    if prompt := st.chat_input("Ask a question about the BOQ"):
-        # Add user message
-        st.session_state.messages.append(
-            {"role": "user", "content": prompt}
+def render_boq_output():
+    """Render the BOQ output."""
+    st.subheader("📋 Extracted BOQ")
+    
+    if st.session_state.boq_output:
+        st.markdown(st.session_state.boq_output)
+        
+        # Download button
+        st.download_button(
+            label="📥 Download BOQ as Markdown",
+            data=st.session_state.boq_output,
+            file_name="boq_output.md",
+            mime="text/markdown"
         )
+    else:
+        st.info("Upload a PDF to see extracted BOQ items")
 
-        with st.chat_message("user"):
-            st.markdown(prompt)
 
-        # Assistant response
-        with st.chat_message("assistant"):
-            with st.spinner("Thinking..."):
-                try:
-                    # OLD LangChain API (ConversationalRetrievalChain)
-                    response = st.session_state.qa_chain(
-                        {"question": prompt}
-                    )
+def render_consistency_check():
+    """Render consistency check interface."""
+    st.subheader("🔍 Consistency Check")
+    
+    if not st.session_state.document_loaded:
+        st.info("Upload a PDF to run consistency checks")
+        return
+    
+    runs = st.number_input(
+        "Number of extraction runs",
+        min_value=2,
+        max_value=10,
+        value=settings.consistency.default_runs,
+        step=1
+    )
+    
+    if st.button("Run Consistency Check"):
+        with st.spinner(f"Running {runs} extraction passes..."):
+            try:
+                result = st.session_state.consistency_checker.check(
+                    chunks=st.session_state.chunks,
+                    vector_store=st.session_state.vector_store,
+                    runs=runs
+                )
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("Consistency Score", f"{result['consistency_score']:.1f}%")
+                
+                with col2:
+                    st.metric("Avg Confidence", f"{result['avg_confidence']:.1f}%")
+                
+                with col3:
+                    st.metric("Successful Runs", f"{result['successful_runs']}/{result['runs']}")
+                
+                if result['is_low_consistency']:
+                    st.warning("⚠️ Low consistency detected. Results may vary.")
+                else:
+                    st.success("✅ Good consistency across extraction runs")
+                    
+            except Exception as e:
+                logger.error(f"Consistency check error: {e}")
+                st.error(f"Error: {str(e)}")
 
-                    answer = response.get("answer", "No response generated.")
-                    st.markdown(answer)
 
-                    st.session_state.messages.append(
-                        {"role": "assistant", "content": answer}
-                    )
+def render_sidebar():
+    """Render the sidebar."""
+    with st.sidebar:
+        st.title("📄 BOQ Extractor")
+        st.markdown("---")
+        
+        # File upload
+        uploaded_file = st.file_uploader(
+            "Upload PDF Document",
+            type=["pdf"],
+            help="Upload a tender/BOQ document for extraction"
+        )
+        
+        if uploaded_file:
+            if st.button("🚀 Process Document"):
+                process_pdf(uploaded_file)
+        
+        st.markdown("---")
+        
+        # Clear session
+        if st.button("🗑️ Clear Session"):
+            for key in list(st.session_state.keys()):
+                if key != "services_initialized":
+                    del st.session_state[key]
+            initialize_session_state()
+            st.success("Session cleared!")
+            st.rerun()
 
-                except Exception as e:
-                    st.error(f"Chat error: {e}")
+
+def main():
+    """Main application entry point."""
+    # Page config
+    st.set_page_config(
+        page_title=settings.streamlit.page_title,
+        page_icon=settings.streamlit.page_icon,
+        layout=settings.streamlit.layout,
+        initial_sidebar_state="expanded"
+    )
+    
+    # Add CSS for sticky tabs
+    st.markdown("""
+        <style>
+        /* Make tabs sticky at top */
+        .stTabs [data-baseweb="tab-list"] {
+            position: sticky;
+            top: 0;
+            background-color: white;
+            z-index: 999;
+            padding-top: 1rem;
+            padding-bottom: 0.5rem;
+            border-bottom: 1px solid #e6e6e6;
+        }
+        
+        /* Dark mode support */
+        @media (prefers-color-scheme: dark) {
+            .stTabs [data-baseweb="tab-list"] {
+                background-color: #0e1117;
+                border-bottom: 1px solid #333;
+            }
+        }
+        
+        /* Streamlit dark theme */
+        [data-theme="dark"] .stTabs [data-baseweb="tab-list"] {
+            background-color: #0e1117;
+            border-bottom: 1px solid #333;
+        }
+        </style>
+    """, unsafe_allow_html=True)
+    
+    # Initialize
+    initialize_services()
+    initialize_session_state()
+    
+    # Render sidebar
+    render_sidebar()
+    
+    # Main content tabs
+    tab1, tab2, tab3 = st.tabs(["📋 BOQ Output", "💬 Chat", "🔍 Analysis"])
+    
+    with tab1:
+        render_boq_output()
+    
+    with tab2:
+        render_chat_interface()
+    
+    with tab3:
+        render_consistency_check()
+
+
+if __name__ == "__main__":
+    main()

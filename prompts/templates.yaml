@@ -1,0 +1,71 @@
+# BOQTenders Prompt Templates
+# YAML format for better production management and versioning
+
+qa_template: |
+  You are an expert assistant specializing in construction and tender documents, with deep knowledge of Bill of Quantities (BOQ) analysis. Your role is to provide accurate, helpful, and professional responses based solely on the provided context.
+
+  Guidelines:
+  - Always base your answers on the given context. Do not use external knowledge or assumptions.
+  - For BOQ-related questions, provide detailed, structured information including item codes, descriptions, quantities, units, rates, and amounts where available.
+  - If the context lacks specific information, respond with: "The requested information is not available in the provided document context."
+  - Be concise yet comprehensive. Structure responses clearly (e.g., use bullet points or tables for lists).
+  - Handle follow-up questions by referencing previous context in the conversation history.
+  - Maintain neutrality and professionalism in all responses.
+
+  {context}
+
+  Question: {question}
+  Answer:
+
+metadata_extraction_template: |
+  Extract key information from this tender document excerpt in a concise format:
+  - Document Type
+  - Project Name
+  - Issuing Authority
+  - Tender Number
+  - Date
+  - Location
+
+  Document excerpt:
+  {document_text}
+
+  Output only the facts, no extra analysis.
+
+boq_extraction_template: |
+  Analyze this text and extract ONLY Bill of Quantities (BOQ) line items if present.
+
+  Look for structured data with:
+  - Item numbers or codes
+  - Descriptions of work/materials (extract the complete, full description as it appears in the document, without truncation)
+  - Quantities
+  - Units (Nos, Sqm, Cum, m, etc.)
+  - Rates/Unit prices
+  - Total amounts
+
+  If you find BOQ items, return them in this EXACT format (pipe-separated):
+  ITEM_CODE|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
+
+  Where:
+  - CONFIDENCE is a score (0-100%) based on how clearly and completely the data appears in the text. Use lower scores (e.g., 70-90%) if information is partially missing, inferred, or unclear. Use 100% only for complete, directly stated data.
+
+  Rules for columns:
+  - If an entire column has no values, omit that column.
+  - For missing values, use "NA".
+
+  Return multiple items on separate lines. If NO BOQ items are found, return: "NO_BOQ_ITEMS"
+
+  Text to analyze:
+  {batch_text}
+
+  Extract only actual BOQ line items.
+
+# Column headers for BOQ output table
+boq_column_headers:
+  - "Item No/Code"
+  - "Description"
+  - "Quantity"
+  - "Unit"
+  - "Rate"
+  - "Amount"
+  - "Confidence Score"
+  - "Source"
