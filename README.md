@@ -4,8 +4,10 @@ emoji: 📋
 colorFrom: blue
 colorTo: green
 sdk: docker
-app_port: 8501
+app_port: 7860
 pinned: false
+custom_headers:
+  health_route: /health
 ---
 
 # BOQTenders - Bill of Quantities Extractor

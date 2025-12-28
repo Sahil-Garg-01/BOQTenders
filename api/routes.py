@@ -47,14 +47,33 @@ _session_state = {
     "qa_chain": None,
     "vector_store": None,
     "chunks": None,
+    "api_key": None,
 }
 
-# Initialize services
-pdf_extractor = PDFExtractor()
-embedding_service = EmbeddingService()
+# Services will be initialized lazily to avoid startup timeout
+_pdf_extractor = None
+_embedding_service = None
+
+def get_pdf_extractor():
+    global _pdf_extractor
+    if _pdf_extractor is None:
+        _pdf_extractor = PDFExtractor()
+    return _pdf_extractor
+
+def get_embedding_service():
+    global _embedding_service
+    if _embedding_service is None:
+        _embedding_service = EmbeddingService()
+    return _embedding_service
 
 # Expose router for external use
 router = app.router
+
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for HuggingFace Spaces."""
+    return {"status": "healthy"}
 
 
 @app.post(
@@ -92,7 +111,7 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
         try:
             # Extract text from PDF
             logger.info('Extracting text from PDF...')
-            text = pdf_extractor.extract_text(temp_path, filename=file.filename)
+            text = get_pdf_extractor().extract_text(temp_path, filename=file.filename)
             
             if not text:
                 raise HTTPException(
@@ -110,8 +129,9 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
             
             # Create chunks and vector store
             logger.info('Creating embeddings...')
-            chunks = embedding_service.split_text(text)
-            vector_store = embedding_service.create_vector_store(chunks)
+            embedding_svc = get_embedding_service()
+            chunks = embedding_svc.split_text(text)
+            vector_store = embedding_svc.create_vector_store(chunks)
             
             # Extract BOQ
             logger.info('Extracting BOQ...')

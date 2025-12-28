@@ -7,6 +7,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first for better caching
@@ -25,13 +26,5 @@ COPY . .
 # Expose port for Streamlit (HF Spaces default)
 EXPOSE 7860
 
-# Create a startup script
-RUN echo '#!/bin/bash\n\
-# Start FastAPI in background\n\
-uvicorn app:app --host 0.0.0.0 --port 8000 &\n\
-# Start Streamlit as main process\n\
-streamlit run streamlit_app.py --server.port 7860 --server.address 0.0.0.0 --server.headless true --server.enableCORS false --server.enableXsrfProtection false\n\
-' > /app/start.sh && chmod +x /app/start.sh
-
-# Run the startup script
-CMD ["/app/start.sh"]
+# Run only Streamlit (simpler, more reliable for HF Spaces)
+CMD ["streamlit", "run", "streamlit_app.py", "--server.port=7860", "--server.address=0.0.0.0", "--server.headless=true", "--server.enableCORS=false", "--server.enableXsrfProtection=false"]
