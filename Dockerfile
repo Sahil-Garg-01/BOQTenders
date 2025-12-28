@@ -23,12 +23,12 @@ COPY . .
 # For Hugging Face Spaces: Set as a secret in Space settings
 
 # Expose ports for FastAPI and Streamlit
-EXPOSE 8000 8501
+EXPOSE 7860 8000
 
 # Create a startup script
 RUN echo '#!/bin/bash\n\
 uvicorn app:app --host 0.0.0.0 --port 8000 & \n\
-streamlit run streamlit_app.py --server.port 8501 --server.address 0.0.0.0\n\
+streamlit run streamlit_app.py --server.port 7860 --server.address 0.0.0.0 --server.headless true\n\
 wait' > /app/start.sh && chmod +x /app/start.sh
 
 # Run the startup script
