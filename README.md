@@ -1,3 +1,12 @@
+---
+title: BOQ Tenders Agent
+emoji: 📋
+colorFrom: blue
+colorTo: green
+sdk: docker
+pinned: false
+---
+
 # BOQTenders - Bill of Quantities Extractor
 
 A modular, production-ready system for extracting Bill of Quantities (BOQ) from tender documents using LangChain RAG and Gemini LLM.
