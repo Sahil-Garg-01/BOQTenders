@@ -28,17 +28,17 @@ class BOQExtractor:
         boq_output = extractor.extract(chunks)
     """
     
-    def __init__(self, llm_client: LLMClient = None, batch_size: int = None, max_prompt_length: int = None, page_search_length: int = None):
+    def __init__(self, llm_client: LLMClient, batch_size: int = None, max_prompt_length: int = None, page_search_length: int = None):
         """
         Initialize BOQ extractor.
         
         Args:
-            llm_client: LLM client instance. Creates new one if not provided.
+            llm_client: LLM client instance. Required.
             batch_size: Number of chunks per batch. Defaults to config value.
             max_prompt_length: Max chars in prompt. Defaults to config value.
             page_search_length: Chars for page detection. Defaults to config value.
         """
-        self.llm_client = llm_client or LLMClient()
+        self.llm_client = llm_client
         self.batch_size = batch_size or settings.boq.batch_size
         self.max_prompt_length = max_prompt_length or settings.boq.max_prompt_length
         self.page_search_length = page_search_length or settings.boq.page_search_length

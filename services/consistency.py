@@ -21,16 +21,16 @@ class ConsistencyChecker:
         print(f"Consistency: {result['consistency_score']}%")
     """
     
-    def __init__(self, boq_extractor: BOQExtractor = None, default_runs: int = None, low_threshold: float = None):
+    def __init__(self, boq_extractor: BOQExtractor, default_runs: int = None, low_threshold: float = None):
         """
         Initialize consistency checker.
         
         Args:
-            boq_extractor: BOQ extractor instance. Creates new one if not provided.
+            boq_extractor: BOQ extractor instance. Required.
             default_runs: Default number of extraction runs. Defaults to config value.
             low_threshold: Threshold for low consistency warning. Defaults to config value.
         """
-        self.boq_extractor = boq_extractor or BOQExtractor()
+        self.boq_extractor = boq_extractor
         self.default_runs = default_runs or settings.consistency.default_runs
         self.low_threshold = low_threshold or settings.consistency.low_consistency_threshold
     

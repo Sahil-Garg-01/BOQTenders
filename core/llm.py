@@ -17,18 +17,18 @@ class LLMClient:
         response = client.invoke("What is a BOQ?")
     """
     
-    def __init__(self, model_name: str = None, temperature: float = None, api_key: str = None):
+    def __init__(self, api_key: str, model_name: str = None, temperature: float = None):
         """
         Initialize LLM client.
         
         Args:
+            api_key: Google API key. Required.
             model_name: Model to use. Defaults to config value.
             temperature: Sampling temperature. Defaults to config value.
-            api_key: Google API key. Defaults to config value.
         """
+        self.api_key = api_key
         self.model_name = model_name or settings.llm.model_name
         self.temperature = temperature if temperature is not None else settings.llm.temperature
-        self.api_key = api_key or settings.llm.google_api_key
         
         self._llm: Optional[GoogleGenerativeAI] = None
     
@@ -56,7 +56,12 @@ class LLMClient:
             LLM response as string.
         """
         logger.debug(f'Invoking LLM with prompt of length {len(prompt)}')
-        result = str(self.llm.invoke(prompt))
+        try:
+            result = str(self.llm.invoke(prompt))
+        except Exception as e:
+            if "API_KEY_INVALID" in str(e):
+                raise ValueError("Invalid API key")
+            raise
         logger.debug(f'LLM response received, length: {len(result)}')
         return result
     

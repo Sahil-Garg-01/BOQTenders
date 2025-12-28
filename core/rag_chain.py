@@ -21,14 +21,14 @@ class RAGChainBuilder:
         response = chain({"question": "What is the total quantity?"})
     """
     
-    def __init__(self, llm_client: LLMClient = None):
+    def __init__(self, llm_client: LLMClient):
         """
         Initialize RAG chain builder.
         
         Args:
-            llm_client: LLM client instance. Creates new one if not provided.
+            llm_client: LLM client instance. Required.
         """
-        self.llm_client = llm_client or LLMClient()
+        self.llm_client = llm_client
     
     def build(self, vector_store: FAISS, qa_template: str = None, memory_key: str = "chat_history", return_messages: bool = True) -> ConversationalRetrievalChain:
         """

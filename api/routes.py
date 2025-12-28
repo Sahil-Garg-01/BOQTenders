@@ -5,7 +5,7 @@ import tempfile
 from typing import Optional
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 
@@ -52,9 +52,6 @@ _session_state = {
 # Initialize services
 pdf_extractor = PDFExtractor()
 embedding_service = EmbeddingService()
-rag_builder = RAGChainBuilder()
-boq_extractor = BOQExtractor()
-consistency_checker = ConsistencyChecker(boq_extractor=boq_extractor)
 
 # Expose router for external use
 router = app.router
@@ -66,7 +63,7 @@ router = app.router
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     tags=["Documents"]
 )
-async def upload_pdf(file: UploadFile = File(...)):
+async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
     """
     Upload a PDF file for BOQ extraction.
     
@@ -103,6 +100,14 @@ async def upload_pdf(file: UploadFile = File(...)):
                     detail="Could not extract text from PDF"
                 )
             
+            # Create LLM client with user API key
+            from core.llm import LLMClient
+            llm_client = LLMClient(api_key=api_key)
+            
+            # Create services with the LLM client
+            boq_extractor_with_key = BOQExtractor(llm_client=llm_client)
+            rag_builder_with_key = RAGChainBuilder(llm_client=llm_client)
+            
             # Create chunks and vector store
             logger.info('Creating embeddings...')
             chunks = embedding_service.split_text(text)
@@ -110,16 +115,17 @@ async def upload_pdf(file: UploadFile = File(...)):
             
             # Extract BOQ
             logger.info('Extracting BOQ...')
-            boq_output = boq_extractor.extract(chunks, vector_store)
+            boq_output = boq_extractor_with_key.extract(chunks, vector_store)
             
             # Build QA chain
             logger.info('Building QA chain...')
-            qa_chain = rag_builder.build(vector_store)
+            qa_chain = rag_builder_with_key.build(vector_store)
             
             # Store in session state
             _session_state["qa_chain"] = qa_chain
             _session_state["vector_store"] = vector_store
             _session_state["chunks"] = chunks
+            _session_state["api_key"] = api_key
             
             logger.info(f'Upload completed: {len(chunks)} chunks created')
             
@@ -216,7 +222,14 @@ async def check_consistency(runs: int = 4):
     try:
         logger.info(f'Running consistency check with {runs} runs')
         
-        result = consistency_checker.check(
+        # Create BOQ extractor with stored API key
+        from core.llm import LLMClient
+        from services.boq_extractor import BOQExtractor
+        llm_client = LLMClient(api_key=_session_state.get("api_key"))
+        boq_extractor_with_key = BOQExtractor(llm_client=llm_client)
+        consistency_checker_with_key = ConsistencyChecker(boq_extractor=boq_extractor_with_key)
+        
+        result = consistency_checker_with_key.check(
             chunks=_session_state["chunks"],
             vector_store=_session_state["vector_store"],
             runs=runs

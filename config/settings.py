@@ -16,7 +16,7 @@ class LLMSettings(BaseSettings):
     """LLM-related configuration."""
     
     # API Keys
-    google_api_key: str = Field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"),description="Google API key for Gemini")
+    google_api_key: Optional[str] = Field(default_factory=lambda: os.getenv("GOOGLE_API_KEY"),description="Google API key for Gemini")
     
     # Model Configuration
     model_name: str = Field(default="gemini-2.5-flash-lite",description="LLM model name to use")

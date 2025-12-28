@@ -32,15 +32,18 @@ logger.add(
 )
 
 
-def initialize_services():
-    """Initialize all services (cached)."""
-    if "services_initialized" not in st.session_state:
+def initialize_services(api_key: str):
+    """Initialize all services with API key (cached)."""
+    if "services_initialized" not in st.session_state or st.session_state.get("current_api_key") != api_key:
+        from core.llm import LLMClient
+        llm_client = LLMClient(api_key=api_key)
         st.session_state.pdf_extractor = PDFExtractor()
         st.session_state.embedding_service = EmbeddingService()
-        st.session_state.rag_builder = RAGChainBuilder()
-        st.session_state.boq_extractor = BOQExtractor()
-        st.session_state.consistency_checker = ConsistencyChecker()
+        st.session_state.rag_builder = RAGChainBuilder(llm_client=llm_client)
+        st.session_state.boq_extractor = BOQExtractor(llm_client=llm_client)
+        st.session_state.consistency_checker = ConsistencyChecker(boq_extractor=st.session_state.boq_extractor)
         st.session_state.services_initialized = True
+        st.session_state.current_api_key = api_key
 
 
 def initialize_session_state():
@@ -223,6 +226,21 @@ def render_sidebar():
         st.title("📄 BOQ Extractor")
         st.markdown("---")
         
+        # API Key input
+        api_key = st.text_input(
+            "Google API Key",
+            type="password",
+            help="Enter your Google Generative AI API key",
+            key="api_key_input"
+        )
+        
+        if api_key:
+            initialize_services(api_key)
+        else:
+            st.warning("Please enter your LLM API key to proceed.")
+        
+        st.markdown("---")
+        
         # File upload
         uploaded_file = st.file_uploader(
             "Upload PDF Document",
@@ -230,16 +248,18 @@ def render_sidebar():
             help="Upload a tender/BOQ document for extraction"
         )
         
-        if uploaded_file:
+        if uploaded_file and api_key:
             if st.button("🚀 Process Document"):
                 process_pdf(uploaded_file)
+        elif uploaded_file and not api_key:
+            st.error("Please enter API key first.")
         
         st.markdown("---")
         
         # Clear session
         if st.button("🗑️ Clear Session"):
             for key in list(st.session_state.keys()):
-                if key != "services_initialized":
+                if key not in ["services_initialized", "current_api_key"]:
                     del st.session_state[key]
             initialize_session_state()
             st.success("Session cleared!")
@@ -287,7 +307,6 @@ def main():
     """, unsafe_allow_html=True)
     
     # Initialize
-    initialize_services()
     initialize_session_state()
     
     # Render sidebar
