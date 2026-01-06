@@ -47,6 +47,12 @@ logger.add(
 from api.routes import router
 app.include_router(router)
 
+# Root endpoint for Spaces health check
+@app.get("/")
+async def root():
+    """Root endpoint for Hugging Face Spaces health check."""
+    return {"message": "BOQ Tenders Agent API", "status": "running", "docs": "/docs"}
+
 # Health check endpoint
 @app.get("/health")
 async def health_check():
