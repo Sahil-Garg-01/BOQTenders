@@ -23,8 +23,8 @@ COPY . .
 # For local testing: docker run -e HF_API_TOKEN=your_token ...
 # For Hugging Face Spaces: Set as a secret in Space settings
 
-# Expose port for Streamlit (HF Spaces default)
+# Expose port for FastAPI (HF Spaces default)
 EXPOSE 7860
 
-# Run only Streamlit (simpler, more reliable for HF Spaces)
-CMD ["streamlit", "run", "streamlit_app.py", "--server.port=7860", "--server.address=0.0.0.0", "--server.headless=true", "--server.enableCORS=false", "--server.enableXsrfProtection=false"]
+# Run FastAPI app
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "7860"]
