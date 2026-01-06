@@ -5,8 +5,7 @@ import tempfile
 from typing import Optional
 from pathlib import Path
 
-from fastapi import FastAPI, File, UploadFile, HTTPException, Form
-from fastapi.middleware.cors import CORSMiddleware
+from fastapi import APIRouter, File, UploadFile, HTTPException, Form
 from loguru import logger
 
 from config.settings import settings
@@ -24,23 +23,8 @@ from api.schemas import (
 )
 
 
-# Initialize FastAPI app
-app = FastAPI(
-    title=settings.api.title,
-    description=settings.api.description,
-    version=settings.api.version,
-    docs_url="/docs" if settings.api.docs_enabled else None,
-    redoc_url="/redoc" if settings.api.docs_enabled else None,
-)
-
-# Configure CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.api.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Create API router
+router = APIRouter()
 
 # Global state for session data
 _session_state = {
@@ -66,17 +50,9 @@ def get_embedding_service():
         _embedding_service = EmbeddingService()
     return _embedding_service
 
-# Expose router for external use
-router = app.router
 
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint for HuggingFace Spaces."""
-    return {"status": "healthy"}
-
-
-@app.post(
+@router.post(
     "/upload",
     response_model=UploadResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
@@ -165,7 +141,7 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post(
+@router.post(
     "/chat",
     response_model=ChatResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
@@ -204,7 +180,7 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post(
+@router.post(
     "/consistency",
     response_model=ConsistencyResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
@@ -267,7 +243,7 @@ async def check_consistency(runs: int = 4):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get(
+@router.get(
     "/clear",
     tags=["Session"]
 )

@@ -12,9 +12,28 @@ from pathlib import Path
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent))
 
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from loguru import logger
 from config.settings import settings
-from api.routes import app
+
+# Create FastAPI app
+app = FastAPI(
+    title=settings.api.title,
+    description=settings.api.description,
+    version=settings.api.version,
+    docs_url="/docs" if settings.api.docs_enabled else None,
+    redoc_url="/redoc" if settings.api.docs_enabled else None,
+)
+
+# Configure CORS
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.api.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configure logging
 logger.remove()
@@ -23,6 +42,16 @@ logger.add(
     level=settings.log_level,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level: <8}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - <level>{message}</level>"
 )
+
+# Import and include routes
+from api.routes import router
+app.include_router(router)
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for HuggingFace Spaces."""
+    return {"status": "healthy"}
 
 # Export app for uvicorn
 __all__ = ["app"]
