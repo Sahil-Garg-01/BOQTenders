@@ -6,10 +6,10 @@ import os
 from typing import Optional
 from pydantic_settings import BaseSettings
 from pydantic import Field
-# import dotenv
+import dotenv
 
 # Load environment variables from .env file
-# dotenv.load_dotenv()
+dotenv.load_dotenv()
 
 
 class LLMSettings(BaseSettings):
