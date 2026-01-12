@@ -1,7 +1,11 @@
 """
 FastAPI routes for BOQ extraction API.
 """
+import io
+import json
 import tempfile
+import uuid
+from datetime import datetime, timezone
 from typing import Optional
 from pathlib import Path
 
@@ -14,6 +18,7 @@ from core.embeddings import EmbeddingService
 from core.rag_chain import RAGChainBuilder
 from services.boq_extractor import BOQExtractor
 from services.consistency import ConsistencyChecker
+from services.s3_utils import upload_to_s3, generate_presigned_get_url
 from api.schemas import (
     ChatRequest,
     ChatResponse,
@@ -69,6 +74,11 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
     """
     global _session_state
     
+    # Generate unique process ID
+    process_id = str(uuid.uuid4())
+    service = "boq_upload"
+    created_at = datetime.now(timezone.utc).isoformat()
+    
     if not file:
         raise HTTPException(status_code=400, detail="No file uploaded")
     
@@ -83,6 +93,11 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
             content = await file.read()
             temp_file.write(content)
             temp_path = temp_file.name
+        
+        # Upload to S3
+        s3_key = f"uploads/{process_id}_{file.filename}"
+        upload_success = upload_to_s3(temp_path, s3_key)
+        input_url = generate_presigned_get_url(s3_key) if upload_success else None
         
         try:
             # Extract text from PDF
@@ -112,6 +127,12 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
             # Extract BOQ
             logger.info('Extracting BOQ...')
             boq_output = boq_extractor_with_key.extract(chunks, vector_store)
+            
+            # Upload BOQ output to S3
+            json_bytes = json.dumps({"boq_output": boq_output}, ensure_ascii=False, indent=2).encode('utf-8')
+            output_s3_key = f"outputs/boq_{process_id}.json"
+            with io.BytesIO(json_bytes) as f:
+                upload_to_s3(f, output_s3_key)
             
             # Build QA chain
             logger.info('Building QA chain...')
@@ -170,6 +191,13 @@ async def chat(request: ChatRequest):
         response = qa_chain({"question": request.question})
         
         answer = response.get("answer", "")
+        
+        # Upload chat data to S3
+        chat_data = {"question": request.question, "answer": answer}
+        json_bytes = json.dumps(chat_data, ensure_ascii=False, indent=2).encode('utf-8')
+        chat_s3_key = f"chats/chat_{uuid.uuid4()}.json"
+        with io.BytesIO(json_bytes) as f:
+            upload_to_s3(f, chat_s3_key)
         
         logger.info('Chat response generated')
         
@@ -230,6 +258,12 @@ async def check_consistency(runs: int = 4):
             vector_store=_session_state["vector_store"],
             runs=runs
         )
+        
+        # Upload consistency result to S3
+        json_bytes = json.dumps(result, ensure_ascii=False, indent=2).encode('utf-8')
+        consistency_s3_key = f"consistency/consistency_{uuid.uuid4()}.json"
+        with io.BytesIO(json_bytes) as f:
+            upload_to_s3(f, consistency_s3_key)
         
         return ConsistencyResponse(
             consistency_score=result.get("consistency_score"),

@@ -61,6 +61,17 @@ class ConsistencySettings(BaseSettings):
     low_consistency_threshold: float = Field(default=80.0,ge=0.0,le=100.0,description="Threshold below which consistency is considered low")
 
 
+class S3Settings(BaseSettings):
+    """AWS S3 configuration."""
+    
+    access_key_id: Optional[str] = Field(default_factory=lambda: os.getenv("AWS_ACCESS_KEY_ID"), description="AWS access key ID")
+    secret_access_key: Optional[str] = Field(default_factory=lambda: os.getenv("AWS_SECRET_ACCESS_KEY"), description="AWS secret access key")
+    region: str = Field(default_factory=lambda: os.getenv("AWS_REGION"), description="AWS region")
+    bucket_name: str = Field(default_factory=lambda: os.getenv("S3_BUCKET_NAME"), description="S3 bucket name")
+    url_expires: int = Field(default=3600, description="Presigned URL expiration time in seconds")
+
+
+
 class APISettings(BaseSettings):
     """FastAPI server configuration."""
     
@@ -96,6 +107,7 @@ class Settings(BaseSettings):
     pdf: PDFExtractionSettings = Field(default_factory=PDFExtractionSettings)
     boq: BOQExtractionSettings = Field(default_factory=BOQExtractionSettings)
     consistency: ConsistencySettings = Field(default_factory=ConsistencySettings)
+    s3: S3Settings = Field(default_factory=S3Settings)
     api: APISettings = Field(default_factory=APISettings)
     streamlit: StreamlitSettings = Field(default_factory=StreamlitSettings)
     

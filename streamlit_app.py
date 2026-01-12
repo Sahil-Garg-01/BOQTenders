@@ -106,7 +106,7 @@ def process_pdf(uploaded_file) -> bool:
                 st.session_state.document_loaded = True
                 st.session_state.chat_history = []
                 
-                st.success(f"✅ Processed {len(chunks)} document chunks")
+                st.success(f"Processed the document")
                 return True
                 
             finally:
