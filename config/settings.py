@@ -71,6 +71,13 @@ class S3Settings(BaseSettings):
     url_expires: int = Field(default=3600, description="Presigned URL expiration time in seconds")
 
 
+class MongoSettings(BaseSettings):
+    """MongoDB configuration."""
+    
+    uri: Optional[str] = Field(default_factory=lambda: os.getenv("MONGODB_URI"), description="MongoDB connection URI")
+    database: str = Field(default_factory=lambda: os.getenv("MONGODB_DB"), description="MongoDB database name")
+    collection: str = Field(default_factory=lambda: os.getenv("MONGODB_COLLECTION"), description="MongoDB collection name")
+
 
 class APISettings(BaseSettings):
     """FastAPI server configuration."""
@@ -108,6 +115,7 @@ class Settings(BaseSettings):
     boq: BOQExtractionSettings = Field(default_factory=BOQExtractionSettings)
     consistency: ConsistencySettings = Field(default_factory=ConsistencySettings)
     s3: S3Settings = Field(default_factory=S3Settings)
+    mongo: MongoSettings = Field(default_factory=MongoSettings)
     api: APISettings = Field(default_factory=APISettings)
     streamlit: StreamlitSettings = Field(default_factory=StreamlitSettings)
     

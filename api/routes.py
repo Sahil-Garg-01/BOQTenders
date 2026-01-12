@@ -19,6 +19,7 @@ from core.rag_chain import RAGChainBuilder
 from services.boq_extractor import BOQExtractor
 from services.consistency import ConsistencyChecker
 from services.s3_utils import upload_to_s3, generate_presigned_get_url
+from services.mongo_store import insert_event, list_latest_events_for_service, get_latest_event_for_process
 from api.schemas import (
     ChatRequest,
     ChatResponse,
@@ -99,6 +100,16 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
         upload_success = upload_to_s3(temp_path, s3_key)
         input_url = generate_presigned_get_url(s3_key) if upload_success else None
         
+        # Log created event
+        insert_event({
+            "id": process_id,
+            "timestamp": created_at,
+            "service": service,
+            "status": "created",
+            "filename": file.filename,
+            "input_file_path": input_url,
+        })
+        
         try:
             # Extract text from PDF
             logger.info('Extracting text from PDF...')
@@ -109,6 +120,15 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
                     status_code=400,
                     detail="Could not extract text from PDF"
                 )
+            
+            # Progress update
+            insert_event({
+                "id": process_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "service": service,
+                "current_step": "text_extraction",
+                "status": "in_progress",
+            })
             
             # Create LLM client with user API key
             from core.llm import LLMClient
@@ -124,6 +144,15 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
             chunks = embedding_svc.split_text(text)
             vector_store = embedding_svc.create_vector_store(chunks)
             
+            # Progress update
+            insert_event({
+                "id": process_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "service": service,
+                "current_step": "embedding_creation",
+                "status": "in_progress",
+            })
+            
             # Extract BOQ
             logger.info('Extracting BOQ...')
             boq_output = boq_extractor_with_key.extract(chunks, vector_store)
@@ -133,6 +162,15 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
             output_s3_key = f"outputs/boq_{process_id}.json"
             with io.BytesIO(json_bytes) as f:
                 upload_to_s3(f, output_s3_key)
+            
+            # Progress update
+            insert_event({
+                "id": process_id,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "service": service,
+                "current_step": "boq_extraction",
+                "status": "in_progress",
+            })
             
             # Build QA chain
             logger.info('Building QA chain...')
@@ -145,6 +183,16 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
             _session_state["api_key"] = api_key
             
             logger.info(f'Upload completed: {len(chunks)} chunks created')
+            
+            # Completed event
+            finished_at = datetime.now(timezone.utc).isoformat()
+            insert_event({
+                "id": process_id,
+                "timestamp": finished_at,
+                "service": service,
+                "status": "completed",
+                "answer": boq_output,
+            })
             
             return UploadResponse(
                 message="success",
@@ -159,6 +207,14 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
         raise
     except Exception as e:
         logger.error(f'Error processing upload: {e}')
+        # Failed event
+        insert_event({
+            "id": process_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "service": service,
+            "status": "failed",
+            "error_message": str(e),
+        })
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -185,6 +241,17 @@ async def chat(request: ChatRequest):
     try:
         logger.info(f'Processing chat question: {request.question[:50]}...')
         
+        # Log question event
+        chat_process_id = str(uuid.uuid4())
+        insert_event({
+            "id": chat_process_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "service": "chat",
+            "event_type": "question",
+            "status": "created",
+            "question": request.question,
+        })
+        
         qa_chain = _session_state["qa_chain"]
         
         # Get response from QA chain (using old LangChain API)
@@ -198,6 +265,16 @@ async def chat(request: ChatRequest):
         chat_s3_key = f"chats/chat_{uuid.uuid4()}.json"
         with io.BytesIO(json_bytes) as f:
             upload_to_s3(f, chat_s3_key)
+        
+        # Log answer event
+        insert_event({
+            "id": chat_process_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "service": "chat",
+            "event_type": "answer",
+            "status": "completed",
+            "answer": answer,
+        })
         
         logger.info('Chat response generated')
         
@@ -265,6 +342,17 @@ async def check_consistency(runs: int = 4):
         with io.BytesIO(json_bytes) as f:
             upload_to_s3(f, consistency_s3_key)
         
+        # Log consistency event
+        consistency_process_id = str(uuid.uuid4())
+        insert_event({
+            "id": consistency_process_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "service": "consistency",
+            "event_type": "completed",
+            "status": "completed",
+            "runs": runs,
+        })
+        
         return ConsistencyResponse(
             consistency_score=result.get("consistency_score"),
             successful_runs=result.get("successful_runs"),
@@ -293,3 +381,39 @@ async def clear_session():
     
     logger.info('Session cleared')
     return {"message": "Session cleared"}
+
+
+@router.get("/processes", tags=["Processes"])
+async def list_processes(limit: int = 5, service: Optional[str] = None):
+
+    if service:
+        records = list_latest_events_for_service(service, limit=limit)
+        services = [service]
+    else:
+        # Combine from all services
+        records = []
+        services = ["boq_upload", "chat", "consistency"]
+        for svc in services:
+            try:
+                records.extend(list_latest_events_for_service(svc, limit=limit))
+            except Exception:
+                continue
+        # Sort by timestamp descending and limit
+        records = sorted(records, key=lambda x: x.get("timestamp", ""), reverse=True)[:limit]
+    
+    return {
+        "services": services,
+        "count": len(records),
+        "records": records
+    }
+
+
+@router.get("/processes/{process_id}", tags=["Processes"])
+async def get_process(process_id: str):
+    """
+    Get details of a specific process.
+    """
+    rec = get_latest_event_for_process(process_id)
+    if not rec:
+        raise HTTPException(status_code=404, detail="Process not found")
+    return rec
