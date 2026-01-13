@@ -102,17 +102,17 @@ class BOQExtractor:
             return None
         
         parts = [p.strip() for p in line.split('|')]
-        if len(parts) < 7:
-            parts += ['NA'] * (7 - len(parts))
+        if len(parts) < 8:
+            parts += ['NA'] * (8 - len(parts))
         
         # Add source column
         parts.append("Unknown")
         
         # Detect page source
-        desc = parts[1]
-        parts[7] = self._detect_page_source(desc, batch_text)
+        desc = parts[2]
+        parts[8] = self._detect_page_source(desc, batch_text)
         
-        return '|'.join(parts[:8])
+        return '|'.join(parts[:9])
     
     def _extract_from_batch(self, batch_text: str, batch_num: int) -> List[str]:
         """
@@ -174,16 +174,16 @@ class BOQExtractor:
 No BOQ items were found in this document.'''
         
         # Determine which columns have data
-        cols_present = [False] * 8
+        cols_present = [False] * 9
         normalized_items = []
         
         for item in unique_items:
             parts = [p.strip() for p in item.split('|')]
-            if len(parts) < 8:
-                parts += ['NA'] * (8 - len(parts))
-            normalized_items.append(parts[:8])
+            if len(parts) < 9:
+                parts += ['NA'] * (9 - len(parts))
+            normalized_items.append(parts[:9])
             
-            for i in range(8):
+            for i in range(9):
                 if parts[i] and parts[i].upper() != 'NA':
                     cols_present[i] = True
         
@@ -191,8 +191,8 @@ No BOQ items were found in this document.'''
         col_indices = [i for i, present in enumerate(cols_present) if present]
         if 0 not in col_indices:
             col_indices.insert(0, 0)
-        if 1 not in col_indices:
-            col_indices.insert(1, 1)
+        if 2 not in col_indices:
+            col_indices.insert(1, 2)
         
         # Build header and separator rows
         header_row = '| ' + ' | '.join([BOQ_COLUMN_HEADERS[i] for i in col_indices]) + ' |\n'
@@ -209,15 +209,15 @@ No BOQ items were found in this document.'''
         # Add data rows
         for parts in normalized_items:
             # Truncate source if too long
-            parts[7] = parts[7][:self.source_max_length] if len(parts[7]) > self.source_max_length else parts[7]
+            parts[8] = parts[8][:self.source_max_length] if len(parts[8]) > self.source_max_length else parts[8]
             row_vals = [parts[i] for i in col_indices]
             
             # Format confidence score
-            if 6 in col_indices:
-                conf_idx = col_indices.index(6)
+            if 7 in col_indices:
+                conf_idx = col_indices.index(7)
                 if row_vals[conf_idx] != 'NA':
                     row_vals[conf_idx] = row_vals[conf_idx].rstrip('%') + '%'
-                    if parts[7] == "Unknown":
+                    if parts[8] == "Unknown":
                         row_vals[conf_idx] = "N/A"
             
             formatted_boq += '| ' + ' | '.join(row_vals) + ' |\n'

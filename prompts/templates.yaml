@@ -36,6 +36,7 @@ boq_extraction_template: |
 
   Look for structured data with:
   - Item numbers or codes
+  - Item names (short, concise names for the items, e.g., "Cable Supply", "Light Installation")
   - Descriptions of work/materials (extract the complete, full description as it appears in the document, without truncation)
   - Quantities
   - Units (Nos, Sqm, Cum, m, etc.)
@@ -43,9 +44,15 @@ boq_extraction_template: |
   - Total amounts
 
   If you find BOQ items, return them in this EXACT format (pipe-separated):
-  ITEM_CODE|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
+  ITEM_CODE|ITEM_NAME|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
 
   Where:
+  - ITEM_NAME is a very short, direct name for the item (2-6 words max), focusing on the core item type and key specifications. Create it dynamically based on the description:
+    - Identify the main item (e.g., cable, conduit, light, switch, breaker, electrode)
+    - Include essential specs in parentheses (e.g., size, wattage, voltage)
+    - Remove redundant words like "supplying and fixing", "installation of"
+    - Examples: "Cable (185 sq.mm)", "LED Downlight (36W)", "PVC Conduit (20mm)", "MCB (63A)", "Earth Electrode"
+  - DESCRIPTION is the complete, full description as it appears in the document
   - CONFIDENCE is a score (0-100%) based on how clearly and completely the data appears in the text. Use lower scores (e.g., 70-90%) if information is partially missing, inferred, or unclear. Use 100% only for complete, directly stated data.
 
   Rules for columns:
@@ -62,7 +69,8 @@ boq_extraction_template: |
 # Column headers for BOQ output table
 boq_column_headers:
   - "Item No/Code"
-  - "Description"
+  - "Item Name"
+  - "Item Description"
   - "Quantity"
   - "Unit"
   - "Rate"
