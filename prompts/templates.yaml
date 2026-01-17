@@ -66,6 +66,48 @@ boq_extraction_template: |
 
   Extract only actual BOQ line items.
 
+boq_improvement_template: |
+  Given the previous BOQ extraction below, re-analyze the text and improve the extraction by correcting errors, filling missing values, and adding any missed items that were not in the previous extraction.
+
+  Previous BOQ Extraction:
+  {previous_boq}
+
+  IMPORTANT: When adding new items, append them at the END of the existing list. Do not insert them in the middle or at the beginning. Maintain the original item numbering and order where possible.
+
+  Now, analyze this text and extract improved BOQ line items.
+
+  Look for structured data with:
+  - Item numbers or codes
+  - Item names (short, concise names for the items, e.g., "Cable Supply", "Light Installation")
+  - Descriptions of work/materials (extract the complete, full description as it appears in the document, without truncation)
+  - Quantities
+  - Units (Nos, Sqm, Cum, m, etc.)
+  - Rates/Unit prices
+  - Total amounts
+
+  If you find BOQ items, return them in this EXACT format (pipe-separated):
+  ITEM_CODE|ITEM_NAME|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
+
+  Where:
+  - ITEM_NAME is a very short, direct name for the item (2-6 words max), focusing on the core item type and key specifications. Create it dynamically based on the description:
+    - Identify the main item (e.g., cable, conduit, light, switch, breaker, electrode)
+    - Include essential specs in parentheses (e.g., size, wattage, voltage)
+    - Remove redundant words like "supplying and fixing", "installation of"
+    - Examples: "Cable (185 sq.mm)", "LED Downlight (36W)", "PVC Conduit (20mm)", "MCB (63A)", "Earth Electrode"
+  - DESCRIPTION is the complete, full description as it appears in the document
+  - CONFIDENCE is a score (0-100%) based on how clearly and completely the data appears in the text. Use higher scores for improvements and corrections.
+
+  Rules for columns:
+  - If an entire column has no values, omit that column.
+  - For missing values, use "NA".
+
+  Return multiple items on separate lines. If NO improvements or BOQ items are found, return: "NO_BOQ_ITEMS"
+
+  Text to analyze:
+  {batch_text}
+
+  Improve and extract only actual BOQ line items, appending new items at the end.
+
 # Column headers for BOQ output table
 boq_column_headers:
   - "Item No/Code"

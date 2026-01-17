@@ -23,8 +23,7 @@ from services.mongo_store import insert_event, list_latest_events_for_service, g
 from api.schemas import (
     ChatRequest,
     ChatResponse,
-    UploadResponse,
-    ConsistencyResponse,
+    GetBoqResponse,
     ErrorResponse,
 )
 
@@ -59,35 +58,39 @@ def get_embedding_service():
 
 
 @router.post(
-    "/upload",
-    response_model=UploadResponse,
+    "/get_boq",
+    response_model=GetBoqResponse,
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     tags=["Documents"]
 )
-async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
+async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: int = Form(2)):
     """
-    Upload a PDF file for BOQ extraction.
+    Get BOQ from a PDF file with iterative improvement and consistency checking.
     
     - Extracts text from PDF
     - Creates embeddings and vector store
-    - Extracts BOQ items
+    - Extracts BOQ items iteratively (runs 1-5)
+    - Computes consistency metrics
     - Sets up QA chain for chat
     """
     global _session_state
     
     # Generate unique process ID
     process_id = str(uuid.uuid4())
-    service = "boq_upload"
+    service = "get_boq"
     created_at = datetime.now(timezone.utc).isoformat()
     
     if not file:
-        raise HTTPException(status_code=400, detail="No file uploaded")
+        raise HTTPException(status_code=400, detail="No file provided")
     
     if not file.filename.lower().endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
     
+    if runs < 1 or runs > 5:
+        raise HTTPException(status_code=400, detail="Runs must be between 1 and 5")
+    
     try:
-        logger.info(f'Processing uploaded file: {file.filename}')
+        logger.info(f'Processing file: {file.filename}')
         
         # Save to temp file
         with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
@@ -155,10 +158,20 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
             
             # Extract BOQ
             logger.info('Extracting BOQ...')
-            boq_output = boq_extractor_with_key.extract(chunks, vector_store)
+            final_boq, all_outputs = boq_extractor_with_key.extract_iterative(chunks, vector_store, runs)
+            consistency_checker_with_key = ConsistencyChecker(boq_extractor=boq_extractor_with_key)
+            consistency = consistency_checker_with_key.check_from_outputs(all_outputs)
+            boq_output = final_boq
             
             # Upload BOQ output to S3
-            json_bytes = json.dumps({"boq_output": boq_output}, ensure_ascii=False, indent=2).encode('utf-8')
+            s3_data = {
+                "output": boq_output,
+                "consistency_score": consistency.get("consistency_score"),
+                "runs": consistency.get("runs"),
+                "successful_runs": consistency.get("successful_runs"),
+                "avg_confidence": consistency.get("avg_confidence")
+            }
+            json_bytes = json.dumps(s3_data, ensure_ascii=False, indent=2).encode('utf-8')
             output_s3_key = f"outputs/boq_{process_id}.json"
             with io.BytesIO(json_bytes) as f:
                 upload_to_s3(f, output_s3_key)
@@ -182,7 +195,7 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
             _session_state["chunks"] = chunks
             _session_state["api_key"] = api_key
             
-            logger.info(f'Upload completed: {len(chunks)} chunks created')
+            logger.info(f'BOQ extraction completed: {len(chunks)} chunks created')
             
             # Completed event
             finished_at = datetime.now(timezone.utc).isoformat()
@@ -192,11 +205,16 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
                 "service": service,
                 "status": "completed",
                 "answer": boq_output,
+                "runs": runs,
             })
             
-            return UploadResponse(
+            return GetBoqResponse(
                 message="success",
-                output=boq_output
+                output=boq_output,
+                consistency_score=consistency.get("consistency_score"),
+                runs=consistency.get("runs"),
+                successful_runs=consistency.get("successful_runs"),
+                avg_confidence=consistency.get("avg_confidence")
             )
             
         finally:
@@ -206,7 +224,7 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f'Error processing upload: {e}')
+        logger.error(f'Error processing BOQ extraction: {e}')
         # Failed event
         insert_event({
             "id": process_id,
@@ -226,16 +244,16 @@ async def upload_pdf(file: UploadFile = File(...), api_key: str = Form(...)):
 )
 async def chat(request: ChatRequest):
     """
-    Ask a question about the uploaded document.
+    Ask a question about the processed document.
     
-    Requires a document to be uploaded first via /upload endpoint.
+    Requires a document to be processed first via /get_boq endpoint.
     """
     global _session_state
     
     if not _session_state.get("qa_chain"):
         raise HTTPException(
             status_code=400,
-            detail="No document loaded. Please upload a PDF first."
+            detail="No document loaded. Please process a PDF first via /get_boq."
         )
     
     try:
@@ -285,86 +303,6 @@ async def chat(request: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post(
-    "/consistency",
-    response_model=ConsistencyResponse,
-    responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
-    tags=["Analysis"]
-)
-async def check_consistency(runs: int = 4):
-    """
-    Check extraction consistency by running multiple extractions.
-    
-    Requires a document to be uploaded first via /upload endpoint.
-    
-    Args:
-        runs: Number of extraction runs (default: 4)
-    """
-    global _session_state
-    
-    if not _session_state.get("chunks"):
-        raise HTTPException(
-            status_code=400,
-            detail="No document loaded. Please upload a PDF first."
-        )
-    
-    if runs < 2:
-        raise HTTPException(
-            status_code=400,
-            detail="At least 2 runs required for consistency check"
-        )
-    
-    if runs > 10:
-        raise HTTPException(
-            status_code=400,
-            detail="Maximum 10 runs allowed"
-        )
-    
-    try:
-        logger.info(f'Running consistency check with {runs} runs')
-        
-        # Create BOQ extractor with stored API key
-        from core.llm import LLMClient
-        from services.boq_extractor import BOQExtractor
-        llm_client = LLMClient(api_key=_session_state.get("api_key"))
-        boq_extractor_with_key = BOQExtractor(llm_client=llm_client)
-        consistency_checker_with_key = ConsistencyChecker(boq_extractor=boq_extractor_with_key)
-        
-        result = consistency_checker_with_key.check(
-            chunks=_session_state["chunks"],
-            vector_store=_session_state["vector_store"],
-            runs=runs
-        )
-        
-        # Upload consistency result to S3
-        json_bytes = json.dumps(result, ensure_ascii=False, indent=2).encode('utf-8')
-        consistency_s3_key = f"consistency/consistency_{uuid.uuid4()}.json"
-        with io.BytesIO(json_bytes) as f:
-            upload_to_s3(f, consistency_s3_key)
-        
-        # Log consistency event
-        consistency_process_id = str(uuid.uuid4())
-        insert_event({
-            "id": consistency_process_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "service": "consistency",
-            "event_type": "completed",
-            "status": "completed",
-            "runs": runs,
-        })
-        
-        return ConsistencyResponse(
-            consistency_score=result.get("consistency_score"),
-            successful_runs=result.get("successful_runs"),
-            avg_confidence=result.get("avg_confidence"),
-            is_low_consistency=result.get("is_low_consistency")
-        )
-        
-    except Exception as e:
-        logger.error(f'Error in consistency check: {e}')
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get(
     "/clear",
     tags=["Session"]
@@ -392,7 +330,7 @@ async def list_processes(limit: int = 5, service: Optional[str] = None):
     else:
         # Combine from all services
         records = []
-        services = ["boq_upload", "chat", "consistency"]
+        services = ["get_boq", "chat"]
         for svc in services:
             try:
                 records.extend(list_latest_events_for_service(svc, limit=limit))

@@ -13,11 +13,11 @@ from services.boq_extractor import BOQExtractor
 
 class ConsistencyChecker:
     """
-    Checks consistency of BOQ extractions across multiple runs.
+    Checks consistency of BOQ extractions from outputs.
     
     Example:
         checker = ConsistencyChecker()
-        result = checker.check(chunks, vector_store, runs=4)
+        result = checker.check_from_outputs(outputs)
         print(f"Consistency: {result['consistency_score']}%")
     """
     
@@ -102,60 +102,39 @@ class ConsistencyChecker:
         
         return confidences
     
-    def check(self, chunks: List[Document], vector_store: FAISS, runs: int = None) -> Dict[str, Any]:
+    def check_from_outputs(self, outputs: List[str]) -> Dict[str, Any]:
         """
-        Run multiple BOQ extractions and compute consistency metrics.
+        Compute consistency metrics from a list of BOQ outputs.
         
         Args:
-            chunks: Document chunks to extract from.
-            vector_store: Vector store (passed to extractor).
-            runs: Number of extraction runs. Defaults to config value.
+            outputs: List of BOQ output strings.
         
         Returns:
-            Dictionary with consistency metrics:
-                - consistency_score: Overall consistency percentage
-                - runs: Number of runs attempted
-                - successful_runs: Number of successful runs
-                - avg_similarity: Average pairwise similarity
-                - avg_confidence: Average confidence score
-                - total_confidence_scores: Number of confidence scores found
-                - is_low_consistency: Whether consistency is below threshold
+            Dictionary with consistency metrics.
         """
-        runs = runs or self.default_runs
-        logger.info(f'Starting consistency check with {runs} runs')
-        
-        results = []
-        for run_num in range(runs):
-            try:
-                logger.info(f'Consistency run {run_num + 1}/{runs}')
-                boq = self.boq_extractor.extract(chunks, vector_store)
-                results.append(boq)
-            except Exception as e:
-                logger.warning(f"Consistency run {run_num + 1} failed: {e}")
-                results.append("")
+        logger.info(f'Computing consistency from {len(outputs)} outputs')
         
         # Calculate similarity
-        avg_similarity = self._calculate_similarity(results)
+        avg_similarity = self._calculate_similarity(outputs)
         consistency_score = avg_similarity * 100
         
         # Extract and average confidence scores
         all_confidences = []
-        for boq in results:
+        for boq in outputs:
             confidences = self._extract_confidence_scores(boq)
             all_confidences.extend(confidences)
         
         avg_confidence = sum(all_confidences) / len(all_confidences) if all_confidences else 0
-        successful_runs = len([r for r in results if r])
+        successful_runs = len([r for r in outputs if r])
         
         result = {
             "consistency_score": round(consistency_score, 2),
-            "runs": runs,
+            "runs": len(outputs),
             "successful_runs": successful_runs,
             "avg_similarity": round(avg_similarity, 2),
             "avg_confidence": round(avg_confidence, 2),
-            "total_confidence_scores": len(all_confidences),
-            "is_low_consistency": consistency_score < self.low_threshold
+            "total_confidence_scores": len(all_confidences)
         }
         
-        logger.info(f'Consistency check completed: {result}')
+        logger.info(f'Consistency check from outputs completed: {result}')
         return result

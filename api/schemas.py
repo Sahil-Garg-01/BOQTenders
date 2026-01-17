@@ -29,61 +29,24 @@ class ChatResponse(BaseModel):
         }
 
 
-class UploadResponse(BaseModel):
-    """Upload endpoint response schema."""
+class GetBoqResponse(BaseModel):
+    """Get BOQ endpoint response schema."""
     message: str = Field(..., description="Status message")
     output: str = Field(..., description="Extracted BOQ in markdown format")
+    consistency_score: float = Field(..., ge=0, le=100, description="Consistency score as percentage (0-100)")
+    runs: int = Field(..., description="Number of runs performed")
+    successful_runs: int = Field(..., description="Number of successful runs")
+    avg_confidence: float = Field(..., ge=0, le=100, description="Average confidence score")
     
     class Config:
         json_schema_extra = {
             "example": {
                 "message": "success",
-                "output": "## DOCUMENT SUMMARY\n..."
-            }
-        }
-
-
-class ConsistencyResponse(BaseModel):
-    """Consistency check endpoint response schema."""
-    consistency_score: float = Field(
-        ...,
-        ge=0,
-        le=100,
-        description="Consistency score as percentage (0-100)"
-    )
-    successful_runs: int = Field(..., description="Number of successful runs")
-    avg_confidence: float = Field(
-        ...,
-        ge=0,
-        le=100,
-        description="Average confidence score"
-    )
-    is_low_consistency: bool = Field(
-        ...,
-        description="Whether consistency is below threshold"
-    )
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
+                "output": "## DOCUMENT SUMMARY\n...",
                 "consistency_score": 92.5,
-                "successful_runs": 4,
-                "avg_confidence": 85.2,
-                "is_low_consistency": False
-            }
-        }
-
-
-class BOQResponse(BaseModel):
-    """BOQ extraction response schema."""
-    boq_output: str = Field(..., description="Extracted BOQ in markdown format")
-    items_count: int = Field(default=0, description="Number of BOQ items extracted")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "boq_output": "## DOCUMENT SUMMARY\n...",
-                "items_count": 25
+                "runs": 2,
+                "successful_runs": 2,
+                "avg_confidence": 85.2
             }
         }
 
@@ -98,7 +61,7 @@ class ErrorResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "error": "ValidationError",
-                "message": "No file uploaded",
-                "detail": "Please upload a PDF file"
+                "message": "No file provided",
+                "detail": "Please provide a PDF file"
             }
         }

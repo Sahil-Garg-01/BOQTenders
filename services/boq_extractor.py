@@ -12,6 +12,7 @@ from core.llm import LLMClient
 from prompts.get_prompts import (
     METADATA_EXTRACTION_TEMPLATE,
     BOQ_EXTRACTION_TEMPLATE,
+    BOQ_IMPROVEMENT_TEMPLATE,
     BOQ_COLUMN_HEADERS,
 )
 
@@ -24,7 +25,7 @@ class BOQExtractor:
     Extracts Bill of Quantities (BOQ) data from document chunks.
     
     Example:
-        extractor = BOQExtractor()
+        extractor = BOQExtractor(llm_client)
         boq_output = extractor.extract(chunks)
     """
     
@@ -114,19 +115,23 @@ class BOQExtractor:
         
         return '|'.join(parts[:9])
     
-    def _extract_from_batch(self, batch_text: str, batch_num: int) -> List[str]:
+    def _extract_from_batch(self, batch_text: str, batch_num: int, previous_boq: Optional[str] = None) -> List[str]:
         """
         Extract BOQ items from a single batch.
         
         Args:
             batch_text: Combined text from batch chunks.
             batch_num: Batch number for logging.
+            previous_boq: Previous BOQ output for improvement (optional).
         
         Returns:
             List of BOQ item strings.
         """
         prompt_text = batch_text[:self.max_prompt_length]
-        prompt = BOQ_EXTRACTION_TEMPLATE.format(batch_text=prompt_text)
+        if previous_boq:
+            prompt = BOQ_IMPROVEMENT_TEMPLATE.format(previous_boq=previous_boq, batch_text=prompt_text)
+        else:
+            prompt = BOQ_EXTRACTION_TEMPLATE.format(batch_text=prompt_text)
         
         try:
             logger.info(f'Invoking LLM for BOQ extraction on batch {batch_num}...')
@@ -173,11 +178,30 @@ class BOQExtractor:
 ## DETAILED BILL OF QUANTITIES
 No BOQ items were found in this document.'''
         
+        # Filter out header rows and separator rows
+        filtered_items = []
+        for item in unique_items:
+            item_str = str(item).strip()
+            # Skip header rows and separator rows
+            if 'Item No' in item_str or 'Item Code' in item_str or '---' in item_str:
+                logger.debug('Skipping header/separator row')
+                continue
+            if item_str:
+                filtered_items.append(item)
+        
+        if not filtered_items:
+            logger.info('No valid BOQ items found after filtering headers')
+            return f'''## DOCUMENT SUMMARY
+{metadata_result}
+
+## DETAILED BILL OF QUANTITIES
+No BOQ items were found in this document.'''
+        
         # Determine which columns have data
         cols_present = [False] * 9
         normalized_items = []
         
-        for item in unique_items:
+        for item in filtered_items:
             parts = [p.strip() for p in item.split('|')]
             if len(parts) < 9:
                 parts += ['NA'] * (9 - len(parts))
@@ -202,7 +226,7 @@ No BOQ items were found in this document.'''
 {metadata_result}
 
 ## DETAILED BILL OF QUANTITIES
-**Total Items Found:** {len(unique_items)}
+**Total Items Found:** {len(normalized_items)}
 
 {header_row}{sep_row}'''
         
@@ -244,13 +268,14 @@ No BOQ items were found in this document.'''
         
         return formatted_boq
     
-    def extract(self, chunks: List[Document], vector_store: FAISS = None) -> str:
+    def extract(self, chunks: List[Document], vector_store: FAISS = None, previous_boq: Optional[str] = None) -> str:
         """
         Extract BOQ from document chunks.
         
         Args:
             chunks: List of Document chunks.
             vector_store: Optional vector store (not used currently).
+            previous_boq: Previous BOQ output for improvement (optional).
         
         Returns:
             Formatted BOQ output as markdown string.
@@ -276,7 +301,7 @@ No BOQ items were found in this document.'''
                 batch_text = '\n\n'.join(chunk_texts)
                 logger.info(f'Batch text length: {len(batch_text)}')
                 
-                batch_items = self._extract_from_batch(batch_text, batch_num)
+                batch_items = self._extract_from_batch(batch_text, batch_num, previous_boq)
                 boq_items.extend(batch_items)
                 logger.info(f'Batch {batch_num} yielded {len(batch_items)} items')
             
@@ -294,3 +319,55 @@ No BOQ items were found in this document.'''
         except Exception as e:
             logger.error(f'Error in comprehensive BOQ extraction: {e}')
             raise
+    
+    def extract_iterative(self, chunks: List[Document], vector_store: FAISS, runs: int) -> Tuple[str, List[str]]:
+        """
+        Extract BOQ iteratively, improving with each run.
+        
+        Args:
+            chunks: Document chunks.
+            vector_store: Vector store.
+            runs: Number of runs (1-5).
+        
+        Returns:
+            Tuple of (final_boq, list_of_all_outputs).
+        """
+        all_outputs = []
+        previous_boq = None
+        
+        # Handle single run case
+        if runs == 1:
+            logger.info('Starting single BOQ extraction (runs=1)')
+            try:
+                current_output = self.extract(chunks, vector_store, previous_boq)
+                logger.info('Single extraction completed')
+            except Exception as e:
+                logger.error(f'Single extraction failed: {e}')
+                raise
+            all_outputs.append(current_output)
+            return current_output, all_outputs
+        
+        # Handle multiple runs case
+        for run in range(runs):
+            try:
+                logger.info(f'Starting iterative run {run + 1}/{runs}')
+                current_output = self.extract(chunks, vector_store, previous_boq)
+                logger.info(f'Iterative run {run + 1} completed')
+            except Exception as e:
+                logger.warning(f'Iterative run {run + 1} failed: {e}, using previous output')
+                current_output = previous_boq if previous_boq else ""
+            
+            all_outputs.append(current_output)
+            # For next iteration, only pass metadata context, not full formatted output
+            # This prevents re-parsing of markdown formatted items and duplication
+            if current_output and run < runs - 1:
+                # Extract just the metadata section for context improvement
+                summary_end = current_output.find('## DETAILED BILL OF QUANTITIES')
+                if summary_end > 0:
+                    previous_boq = current_output[:summary_end] + 'Use this context to improve extraction in next iteration.'
+                else:
+                    previous_boq = current_output
+            else:
+                previous_boq = None
+        
+        return all_outputs[-1], all_outputs

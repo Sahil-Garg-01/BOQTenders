@@ -50,6 +50,7 @@ def initialize_session_state():
     """Initialize Streamlit session state variables."""
     defaults = {
         "boq_output": None,
+        "consistency": None,
         "qa_chain": None,
         "vector_store": None,
         "chunks": None,
@@ -62,9 +63,13 @@ def initialize_session_state():
             st.session_state[key] = value
 
 
-def process_pdf(uploaded_file) -> bool:
+def process_pdf(uploaded_file, runs: int) -> bool:
     """
     Process uploaded PDF file.
+    
+    Args:
+        uploaded_file: Streamlit uploaded file
+        runs: Number of extraction runs
     
     Returns:
         True if processing succeeded, False otherwise.
@@ -90,9 +95,14 @@ def process_pdf(uploaded_file) -> bool:
                 chunks = st.session_state.embedding_service.split_text(text)
                 vector_store = st.session_state.embedding_service.create_vector_store(chunks)
                 
-                # Extract BOQ
-                st.info("Extracting BOQ items...")
-                boq_output = st.session_state.boq_extractor.extract(chunks, vector_store)
+                # Extract BOQ iteratively
+                st.info(f"Extracting BOQ items ({runs} runs)...")
+                final_boq, all_outputs = st.session_state.boq_extractor.extract_iterative(chunks, vector_store, runs)
+                
+                # Compute consistency
+                consistency = st.session_state.consistency_checker.check_from_outputs(all_outputs)
+                
+                boq_output = final_boq
                 
                 # Build QA chain
                 st.info("Building chat interface...")
@@ -102,6 +112,7 @@ def process_pdf(uploaded_file) -> bool:
                 st.session_state.chunks = chunks
                 st.session_state.vector_store = vector_store
                 st.session_state.boq_output = boq_output
+                st.session_state.consistency = consistency
                 st.session_state.qa_chain = qa_chain
                 st.session_state.document_loaded = True
                 st.session_state.chat_history = []
@@ -170,6 +181,25 @@ def render_boq_output():
             file_name="boq_output.md",
             mime="text/markdown"
         )
+        
+        # Consistency metrics
+        if st.session_state.consistency:
+            st.markdown("---")
+            st.subheader("🔍 Consistency Metrics")
+            
+            consistency = st.session_state.consistency
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Consistency Score", f"{consistency['consistency_score']:.1f}%")
+            
+            with col2:
+                st.metric("Avg Confidence", f"{consistency['avg_confidence']:.1f}%")
+            
+            with col3:
+                st.metric("Successful Runs", f"{consistency['successful_runs']}/{consistency['runs']}")
+            
+            st.success("✅ Extraction completed successfully")
     else:
         st.info("Upload a PDF to see extracted BOQ items")
 
@@ -184,10 +214,11 @@ def render_consistency_check():
     
     runs = st.number_input(
         "Number of extraction runs",
-        min_value=2,
-        max_value=10,
+        min_value=1,
+        max_value=5,
         value=settings.consistency.default_runs,
-        step=1
+        step=1,
+        help="1 for quick check, 2-5 for comprehensive analysis"
     )
     
     if st.button("Run Consistency Check"):
@@ -210,16 +241,10 @@ def render_consistency_check():
                 with col3:
                     st.metric("Successful Runs", f"{result['successful_runs']}/{result['runs']}")
                 
-                if result['is_low_consistency']:
-                    st.warning("⚠️ Low consistency detected. Results may vary.")
-                else:
-                    st.success("✅ Good consistency across extraction runs")
+                st.success("✅ Consistency check completed")
                     
             except Exception as e:
                 logger.error(f"Consistency check error: {e}")
-                st.error(f"Error: {str(e)}")
-
-
 def render_sidebar():
     """Render the sidebar."""
     with st.sidebar:
@@ -248,9 +273,26 @@ def render_sidebar():
             help="Upload a tender/BOQ document for extraction"
         )
         
+        # Runs input
+        runs_options = {
+            1: "Quick (1 run) - Fast Execution",
+            2: "Standard (2 runs) - Balanced Performance", 
+            3: "Enhanced (3 runs) - Better Accuracy",
+            4: "Precise (4 runs) - High Precision",
+            5: "Maximum (5 runs) - Maximum Quality"
+        }
+        
+        runs = st.selectbox(
+            "Extraction Quality",
+            options=list(runs_options.keys()),
+            format_func=lambda x: runs_options[x],
+            index=1,  # Default to 2 runs
+            help="Choose extraction quality. Higher runs improve accuracy but take longer to process."
+        )
+        
         if uploaded_file and api_key:
             if st.button("🚀 Process Document"):
-                process_pdf(uploaded_file)
+                process_pdf(uploaded_file, runs)
         elif uploaded_file and not api_key:
             st.error("Please enter API key first.")
         
@@ -313,16 +355,13 @@ def main():
     render_sidebar()
     
     # Main content tabs
-    tab1, tab2, tab3 = st.tabs(["📋 BOQ Output", "💬 Chat", "🔍 Analysis"])
+    tab1, tab2 = st.tabs(["📋 BOQ Output", "💬 Chat"])
     
     with tab1:
         render_boq_output()
     
     with tab2:
         render_chat_interface()
-    
-    with tab3:
-        render_consistency_check()
 
 
 if __name__ == "__main__":

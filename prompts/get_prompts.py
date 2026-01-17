@@ -14,4 +14,5 @@ with open(_TEMPLATES_PATH, 'r', encoding='utf-8') as f:
 QA_TEMPLATE = _templates['qa_template']
 METADATA_EXTRACTION_TEMPLATE = _templates['metadata_extraction_template']
 BOQ_EXTRACTION_TEMPLATE = _templates['boq_extraction_template']
+BOQ_IMPROVEMENT_TEMPLATE = _templates['boq_improvement_template']
 BOQ_COLUMN_HEADERS = _templates['boq_column_headers']

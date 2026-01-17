@@ -57,7 +57,7 @@ class BOQExtractionSettings(BaseSettings):
 class ConsistencySettings(BaseSettings):
     """Consistency check configuration."""
     
-    default_runs: int = Field(default=4,ge=2,le=10,description="Default number of runs for consistency check")
+    default_runs: int = Field(default=2,ge=1,le=5,description="Default number of runs for consistency check")
     low_consistency_threshold: float = Field(default=80.0,ge=0.0,le=100.0,description="Threshold below which consistency is considered low")
 
 
