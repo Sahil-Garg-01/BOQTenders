@@ -63,7 +63,7 @@ def get_embedding_service():
     responses={400: {"model": ErrorResponse}, 500: {"model": ErrorResponse}},
     tags=["Documents"]
 )
-async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: int = Form(2)):
+async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: int = Form(2), boq_mode: str = Form(None), specific_boq: str = Form(None)):
     """
     Get BOQ from a PDF file with iterative improvement and consistency checking.
     
@@ -72,6 +72,13 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
     - Extracts BOQ items iteratively (runs 1-5)
     - Computes consistency metrics
     - Sets up QA chain for chat
+    
+    Parameters:
+    - file: PDF file to process
+    - api_key: Google API key for LLM
+    - runs: Number of extraction runs (1-5)
+    - boq_mode: JSON list of modes ["default"] or ["specific BOQ"] or both
+    - specific_boq: Specific BOQ name to extract (if "specific BOQ" in boq_mode)
     """
     global _session_state
     
@@ -88,6 +95,16 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
     
     if runs < 1 or runs > 5:
         raise HTTPException(status_code=400, detail="Runs must be between 1 and 5")
+    
+    # Parse boq_mode
+    boq_mode_list = []
+    if boq_mode:
+        try:
+            boq_mode_list = json.loads(boq_mode)
+            if not isinstance(boq_mode_list, list):
+                raise ValueError("boq_mode must be a list")
+        except json.JSONDecodeError:
+            raise HTTPException(status_code=400, detail="Invalid boq_mode format, must be JSON list")
     
     try:
         logger.info(f'Processing file: {file.filename}')
@@ -158,7 +175,7 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
             
             # Extract BOQ
             logger.info('Extracting BOQ...')
-            final_boq, all_outputs = boq_extractor_with_key.extract_iterative(chunks, vector_store, runs)
+            final_boq, all_outputs = boq_extractor_with_key.extract_iterative(chunks, vector_store, runs, boq_mode_list, specific_boq)
             consistency_checker_with_key = ConsistencyChecker(boq_extractor=boq_extractor_with_key)
             consistency = consistency_checker_with_key.check_from_outputs(all_outputs)
             boq_output = final_boq
