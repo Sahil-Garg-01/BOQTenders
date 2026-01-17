@@ -63,13 +63,15 @@ def initialize_session_state():
             st.session_state[key] = value
 
 
-def process_pdf(uploaded_file, runs: int) -> bool:
+def process_pdf(uploaded_file, runs: int, boq_mode: list, specific_boq: str) -> bool:
     """
     Process uploaded PDF file.
     
     Args:
         uploaded_file: Streamlit uploaded file
         runs: Number of extraction runs
+        boq_mode: List of BOQ modes ["default", "specific BOQ"]
+        specific_boq: Specific BOQ string if applicable
     
     Returns:
         True if processing succeeded, False otherwise.
@@ -97,7 +99,7 @@ def process_pdf(uploaded_file, runs: int) -> bool:
                 
                 # Extract BOQ iteratively
                 st.info(f"Extracting BOQ items ({runs} runs)...")
-                final_boq, all_outputs = st.session_state.boq_extractor.extract_iterative(chunks, vector_store, runs)
+                final_boq, all_outputs = st.session_state.boq_extractor.extract_iterative(chunks, vector_store, runs, boq_mode, specific_boq)
                 
                 # Compute consistency
                 consistency = st.session_state.consistency_checker.check_from_outputs(all_outputs)
@@ -290,9 +292,24 @@ def render_sidebar():
             help="Choose extraction quality. Higher runs improve accuracy but take longer to process."
         )
         
+        # BOQ Mode selection
+        boq_mode = st.multiselect(
+            "BOQ Extraction Mode",
+            options=["default", "specific BOQ"],
+            default=["default"],
+            help="Select 'default' for all BOQ items, 'specific BOQ' to extract only a particular BOQ item."
+        )
+        
+        specific_boq = None
+        if "specific BOQ" in boq_mode:
+            specific_boq = st.text_input(
+                "Specific BOQ",
+                help="Enter the name or description of the specific BOQ item to extract."
+            )
+        
         if uploaded_file and api_key:
             if st.button("🚀 Process Document"):
-                process_pdf(uploaded_file, runs)
+                process_pdf(uploaded_file, runs, boq_mode, specific_boq)
         elif uploaded_file and not api_key:
             st.error("Please enter API key first.")
         

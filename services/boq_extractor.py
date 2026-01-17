@@ -115,7 +115,7 @@ class BOQExtractor:
         
         return '|'.join(parts[:9])
     
-    def _extract_from_batch(self, batch_text: str, batch_num: int, previous_boq: Optional[str] = None) -> List[str]:
+    def _extract_from_batch(self, batch_text: str, batch_num: int, previous_boq: Optional[str] = None, boq_mode: list = None, specific_boq: str = None) -> List[str]:
         """
         Extract BOQ items from a single batch.
         
@@ -123,15 +123,30 @@ class BOQExtractor:
             batch_text: Combined text from batch chunks.
             batch_num: Batch number for logging.
             previous_boq: Previous BOQ output for improvement (optional).
+            boq_mode: List of modes ["default", "specific BOQ"].
+            specific_boq: Specific BOQ string if mode includes "specific BOQ".
         
         Returns:
             List of BOQ item strings.
         """
         prompt_text = batch_text[:self.max_prompt_length]
-        if previous_boq:
-            prompt = BOQ_IMPROVEMENT_TEMPLATE.format(previous_boq=previous_boq, batch_text=prompt_text)
+        
+        # Determine extraction instruction based on mode
+        if boq_mode == ["specific BOQ"] and specific_boq:
+            extraction_instruction = f"Extract only BOQ items that are related to or match the following: {specific_boq}. If no matching items are found, return NO_BOQ_ITEMS."
         else:
-            prompt = BOQ_EXTRACTION_TEMPLATE.format(batch_text=prompt_text)
+            extraction_instruction = "Extract all BOQ items present in the text."
+        
+        if previous_boq:
+            base_prompt = BOQ_IMPROVEMENT_TEMPLATE
+            # Insert instruction before "Now, analyze this text"
+            base_prompt = base_prompt.replace("Now, analyze this text and extract improved BOQ line items.", f"{extraction_instruction}\n\nNow, analyze this text and extract improved BOQ line items.")
+            prompt = base_prompt.format(previous_boq=previous_boq, batch_text=prompt_text)
+        else:
+            base_prompt = BOQ_EXTRACTION_TEMPLATE
+            # Insert instruction before "Text to analyze:"
+            base_prompt = base_prompt.replace("Text to analyze:", f"{extraction_instruction}\n\nText to analyze:")
+            prompt = base_prompt.format(batch_text=prompt_text)
         
         try:
             logger.info(f'Invoking LLM for BOQ extraction on batch {batch_num}...')
@@ -268,7 +283,7 @@ No BOQ items were found in this document.'''
         
         return formatted_boq
     
-    def extract(self, chunks: List[Document], vector_store: FAISS = None, previous_boq: Optional[str] = None) -> str:
+    def extract(self, chunks: List[Document], vector_store: FAISS = None, previous_boq: Optional[str] = None, boq_mode: list = None, specific_boq: str = None) -> str:
         """
         Extract BOQ from document chunks.
         
@@ -276,6 +291,8 @@ No BOQ items were found in this document.'''
             chunks: List of Document chunks.
             vector_store: Optional vector store (not used currently).
             previous_boq: Previous BOQ output for improvement (optional).
+            boq_mode: List of modes ["default", "specific BOQ"].
+            specific_boq: Specific BOQ string if mode includes "specific BOQ".
         
         Returns:
             Formatted BOQ output as markdown string.
@@ -301,7 +318,7 @@ No BOQ items were found in this document.'''
                 batch_text = '\n\n'.join(chunk_texts)
                 logger.info(f'Batch text length: {len(batch_text)}')
                 
-                batch_items = self._extract_from_batch(batch_text, batch_num, previous_boq)
+                batch_items = self._extract_from_batch(batch_text, batch_num, previous_boq, boq_mode, specific_boq)
                 boq_items.extend(batch_items)
                 logger.info(f'Batch {batch_num} yielded {len(batch_items)} items')
             
@@ -320,7 +337,7 @@ No BOQ items were found in this document.'''
             logger.error(f'Error in comprehensive BOQ extraction: {e}')
             raise
     
-    def extract_iterative(self, chunks: List[Document], vector_store: FAISS, runs: int) -> Tuple[str, List[str]]:
+    def extract_iterative(self, chunks: List[Document], vector_store: FAISS, runs: int, boq_mode: list = None, specific_boq: str = None) -> Tuple[str, List[str]]:
         """
         Extract BOQ iteratively, improving with each run.
         
@@ -328,10 +345,13 @@ No BOQ items were found in this document.'''
             chunks: Document chunks.
             vector_store: Vector store.
             runs: Number of runs (1-5).
+            boq_mode: List of modes ["default", "specific BOQ"].
+            specific_boq: Specific BOQ string if mode includes "specific BOQ".
         
         Returns:
             Tuple of (final_boq, list_of_all_outputs).
         """
+        logger.info(f'BOQ extraction mode: {boq_mode}, Specific BOQ: {specific_boq}')
         all_outputs = []
         previous_boq = None
         
@@ -339,7 +359,7 @@ No BOQ items were found in this document.'''
         if runs == 1:
             logger.info('Starting single BOQ extraction (runs=1)')
             try:
-                current_output = self.extract(chunks, vector_store, previous_boq)
+                current_output = self.extract(chunks, vector_store, previous_boq, boq_mode, specific_boq)
                 logger.info('Single extraction completed')
             except Exception as e:
                 logger.error(f'Single extraction failed: {e}')
@@ -351,7 +371,7 @@ No BOQ items were found in this document.'''
         for run in range(runs):
             try:
                 logger.info(f'Starting iterative run {run + 1}/{runs}')
-                current_output = self.extract(chunks, vector_store, previous_boq)
+                current_output = self.extract(chunks, vector_store, previous_boq, boq_mode, specific_boq)
                 logger.info(f'Iterative run {run + 1} completed')
             except Exception as e:
                 logger.warning(f'Iterative run {run + 1} failed: {e}, using previous output')
