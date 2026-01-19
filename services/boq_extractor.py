@@ -132,15 +132,20 @@ class BOQExtractor:
         prompt_text = batch_text[:self.max_prompt_length]
         
         # Determine extraction instruction based on mode
-        if boq_mode == ["specific BOQ"] and specific_boq:
+        # If both default and specific BOQ are selected, extract all
+        # If only specific BOQ is selected, apply constraint
+        if boq_mode and "specific BOQ" in boq_mode and "default" not in boq_mode and specific_boq:
             extraction_instruction = f"Extract only BOQ items that are related to or match the following: {specific_boq}. If no matching items are found, return NO_BOQ_ITEMS."
+            specific_constraint = f"\n**IMPORTANT CONSTRAINT:** Only extract items related to: {specific_boq}. Ignore all other items."
         else:
             extraction_instruction = "Extract all BOQ items present in the text."
+            specific_constraint = ""
         
         if previous_boq:
             base_prompt = BOQ_IMPROVEMENT_TEMPLATE
-            # Insert instruction before "Now, analyze this text"
-            base_prompt = base_prompt.replace("Now, analyze this text and extract improved BOQ line items.", f"{extraction_instruction}\n\nNow, analyze this text and extract improved BOQ line items.")
+            # For specific BOQ mode, add constraint to improvement template
+            if specific_constraint:
+                base_prompt = base_prompt.replace("**Your task:**", f"{specific_constraint}\n\n**Your task:**")
             prompt = base_prompt.format(previous_boq=previous_boq, batch_text=prompt_text)
         else:
             base_prompt = BOQ_EXTRACTION_TEMPLATE

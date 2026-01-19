@@ -79,15 +79,17 @@ boq_improvement_template: |
   1. Look for BOQ items in the raw text that are NOT in the previous extraction
   2. For items already extracted, check if quantities/units show "NA" but actual values exist in text
   3. DO NOT duplicate items that are already correctly extracted
+  4. RESPECT any extraction constraints specified above - only extract items within the specified scope
   
   **When to extract:**
-  ✓ Found a NEW item (different item code/description) not in previous BOQ
+  ✓ Found a NEW item (different item code/description) not in previous BOQ AND within allowed scope
   ✓ Found an item where previous shows "NA" but text has actual quantity/unit/rate
   
   **When to skip (return NO_BOQ_ITEMS):**
   ✗ Item is already in previous BOQ with complete data
   ✗ This batch has no BOQ content
   ✗ Items mentioned are already correctly extracted
+  ✗ Item is outside the specified extraction scope/constraint
   
   **Return format (pipe-separated):**
   ITEM_CODE|ITEM_NAME|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
