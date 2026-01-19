@@ -283,6 +283,127 @@ No BOQ items were found in this document.'''
         
         return formatted_boq
     
+    def _merge_multiple_runs(self, all_outputs: List[str]) -> str:
+        """
+        Merge BOQ outputs from multiple runs by extracting and deduplicating items.
+        Preserves the best metadata and combines unique items from all runs.
+        
+        Args:
+            all_outputs: List of BOQ output strings from each run.
+        
+        Returns:
+            Merged BOQ output as markdown string.
+        """
+        if not all_outputs:
+            return ""
+        
+        if len(all_outputs) == 1:
+            return all_outputs[0]
+        
+        logger.info(f'Merging {len(all_outputs)} run outputs...')
+        
+        # Extract all items from all runs
+        all_items = []
+        metadata_lines = []
+        
+        for run_idx, output in enumerate(all_outputs, 1):
+            if not output or output.strip() == "NO_BOQ_ITEMS":
+                logger.info(f'Run {run_idx}: No items to merge (empty or NO_BOQ_ITEMS)')
+                continue
+            
+            lines = output.strip().split('\n')
+            items_in_run = []
+            
+            # Extract metadata from first run
+            if run_idx == 1:
+                for line in lines:
+                    if line.startswith('**Project Name:**') or \
+                       line.startswith('**Tender No:**') or \
+                       line.startswith('**Contract:**') or \
+                       line.startswith('**Date:**'):
+                        metadata_lines.append(line)
+            
+            # Extract table rows (skip header and separator)
+            in_table = False
+            header_found = False
+            for line_idx, line in enumerate(lines):
+                stripped = line.strip()
+                
+                # Detect table header - support multiple formats
+                if stripped.startswith('|') and any(keyword in stripped for keyword in ['S.No', 'Item Code', 'Item No/Code', 'Item Name']):
+                    in_table = True
+                    header_found = True
+                    continue
+                
+                # Skip separator line
+                if in_table and '|---' in stripped:
+                    continue
+                
+                # Extract data rows
+                if in_table and stripped.startswith('|') and stripped.endswith('|'):
+                    # Make sure it's not the header again (check for header keywords)
+                    if not any(keyword in stripped for keyword in ['S.No', 'Item Code', 'Item No/Code', 'Item Name', 'Item Description', 'Quantity', 'Unit', 'Confidence Score']):
+                        items_in_run.append(stripped)
+            
+            logger.info(f'Run {run_idx}: Header found={header_found}, Extracted {len(items_in_run)} items')
+            if not header_found and run_idx == 1:
+                logger.warning(f'Run {run_idx}: No table header found! Output might be malformed.')
+            
+            all_items.extend(items_in_run)
+        
+        # Deduplicate items based on item code and description
+        unique_items_map = {}
+        for item_line in all_items:
+            parts = [p.strip() for p in item_line.split('|') if p.strip()]
+            if len(parts) >= 3:  # Need at least S.No, Code, Description
+                # Create key from code + description (case-insensitive)
+                code = parts[1] if len(parts) > 1 else ""
+                desc = parts[2] if len(parts) > 2 else ""
+                key = f"{code.lower()}||{desc.lower()}"
+                
+                # Keep first occurrence (from earlier run)
+                if key not in unique_items_map:
+                    unique_items_map[key] = item_line
+        
+        unique_items = list(unique_items_map.values())
+        logger.info(f'After deduplication: {len(unique_items)} unique items')
+        
+        # If no items were found in any run, return the first non-empty output
+        if not unique_items:
+            logger.warning('No items found in any run after parsing. Returning first non-empty output.')
+            for output in all_outputs:
+                if output and output.strip() and output.strip() != "NO_BOQ_ITEMS":
+                    return output
+            return all_outputs[0] if all_outputs else ""
+        
+        # Rebuild the BOQ with merged items
+        output_lines = []
+        
+        # Add metadata
+        if metadata_lines:
+            output_lines.append('## BOQ METADATA')
+            output_lines.extend(metadata_lines)
+            output_lines.append('')
+        
+        # Add table
+        output_lines.append('## DETAILED BILL OF QUANTITIES')
+        output_lines.append(f'**Total Items Found:** {len(unique_items)}')
+        output_lines.append('')
+        output_lines.append('| Item No/Code | Item Name | Item Description | Quantity | Unit | Confidence Score | Source |')
+        output_lines.append('|--------------|-----------|------------------|----------|------|------------------|--------|')
+        
+        # Re-number items
+        for idx, item_line in enumerate(unique_items, 1):
+            parts = [p.strip() for p in item_line.split('|') if p.strip()]
+            if parts:
+                parts[0] = str(idx)  # Update item number
+                output_lines.append('| ' + ' | '.join(parts) + ' |')
+        
+        merged_output = '\n'.join(output_lines) + '\n\n'
+        logger.info(f'Merge complete: {len(unique_items)} items in final BOQ')
+        
+        return merged_output
+    
     def extract(self, chunks: List[Document], vector_store: FAISS = None, previous_boq: Optional[str] = None, boq_mode: list = None, specific_boq: str = None) -> str:
         """
         Extract BOQ from document chunks.
@@ -378,16 +499,16 @@ No BOQ items were found in this document.'''
                 current_output = previous_boq if previous_boq else ""
             
             all_outputs.append(current_output)
-            # For next iteration, only pass metadata context, not full formatted output
-            # This prevents re-parsing of markdown formatted items and duplication
+            # For next iteration, pass the full previous output for improvement
+            # This allows the improvement template to see all previously extracted items
             if current_output and run < runs - 1:
-                # Extract just the metadata section for context improvement
-                summary_end = current_output.find('## DETAILED BILL OF QUANTITIES')
-                if summary_end > 0:
-                    previous_boq = current_output[:summary_end] + 'Use this context to improve extraction in next iteration.'
-                else:
-                    previous_boq = current_output
+                # Pass the complete previous output for context improvement
+                previous_boq = current_output
             else:
                 previous_boq = None
         
-        return all_outputs[-1], all_outputs
+        # Merge all runs by extracting and deduplicating BOQ items
+        merged_boq = self._merge_multiple_runs(all_outputs)
+        logger.info(f'Merged {len(all_outputs)} runs into final BOQ')
+        
+        return merged_boq, all_outputs
