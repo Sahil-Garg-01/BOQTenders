@@ -55,14 +55,12 @@ class LLMClient:
         Returns:
             LLM response as string.
         """
-        logger.debug(f'Invoking LLM with prompt of length {len(prompt)}')
         try:
             result = str(self.llm.invoke(prompt))
         except Exception as e:
             if "API_KEY_INVALID" in str(e):
                 raise ValueError("Invalid API key")
             raise
-        logger.debug(f'LLM response received, length: {len(result)}')
         return result
     
     def batch_invoke(self, prompts: list[str]) -> list[str]:
@@ -78,6 +76,5 @@ class LLMClient:
         logger.info(f'Batch invoking LLM with {len(prompts)} prompts')
         results = []
         for i, prompt in enumerate(prompts, 1):
-            logger.debug(f'Processing prompt {i}/{len(prompts)}')
             results.append(self.invoke(prompt))
         return results
