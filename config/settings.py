@@ -48,8 +48,8 @@ class PDFExtractionSettings(BaseSettings):
 class BOQExtractionSettings(BaseSettings):
     """BOQ extraction specific configuration."""
     
-    batch_size: int = Field(default=25,ge=1,le=100,description="Number of chunks per batch for BOQ extraction")
-    max_prompt_length: int = Field(default=30000,description="Maximum characters in extraction prompt")
+    batch_size: int = Field(default=75,ge=1,le=100,description="Number of chunks per batch for BOQ extraction")
+    max_prompt_length: int = Field(default=100000,description="Maximum characters in extraction prompt")
     page_search_length: int = Field(default=30,description="Characters to use for page detection search")
     source_max_length: int = Field(default=50,description="Maximum length for source column")
 
