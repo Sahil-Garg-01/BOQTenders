@@ -25,6 +25,13 @@ qa_template: |
   - Missing item identification
   - Cost impact analysis for changes
 
+  CITATION REQUIREMENTS:
+  - Include document references in parentheses when citing specific information
+  - Use any available reference system: pages, sections, clauses, items, tables, figures, etc.
+  - Combine multiple references when relevant: "(Section 3.23, Page 71)"
+  - Cite strategically for key facts, requirements, and data points
+  - Use exact terminology from the document (Section, Clause, Article, Item, etc.)
+
   RESPONSE FORMAT:
   - Use tables for BOQ data comparisons and lists
   - Provide calculated totals and subtotals where relevant

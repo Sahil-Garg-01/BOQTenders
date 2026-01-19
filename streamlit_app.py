@@ -156,7 +156,7 @@ def render_chat_interface():
         
         with st.spinner("Thinking..."):
             try:
-                response = st.session_state.qa_chain({"question": prompt})
+                response = st.session_state.qa_chain.invoke({"question": prompt})
                 answer = response.get("answer", "I couldn't find an answer.")
                 
                 st.session_state.chat_history.append({"role": "assistant", "content": answer})

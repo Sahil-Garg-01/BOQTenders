@@ -289,8 +289,8 @@ async def chat(request: ChatRequest):
         
         qa_chain = _session_state["qa_chain"]
         
-        # Get response from QA chain (using old LangChain API)
-        response = qa_chain({"question": request.question})
+        # Get response from QA chain using invoke (updated from deprecated __call__)
+        response = qa_chain.invoke({"question": request.question})
         
         answer = response.get("answer", "")
         
