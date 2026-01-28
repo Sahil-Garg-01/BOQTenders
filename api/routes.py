@@ -211,6 +211,7 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
             _session_state["vector_store"] = vector_store
             _session_state["chunks"] = chunks
             _session_state["api_key"] = api_key
+            _session_state["process_id"] = process_id
             
             logger.info(f'BOQ extraction completed: {len(chunks)} chunks created')
             
@@ -297,7 +298,7 @@ async def chat(request: ChatRequest):
         # Upload chat data to S3
         chat_data = {"question": request.question, "answer": answer}
         json_bytes = json.dumps(chat_data, ensure_ascii=False, indent=2).encode('utf-8')
-        chat_s3_key = f"chats/chat_{uuid.uuid4()}.json"
+        chat_s3_key = f"chats/{_session_state['process_id']}_chat_{uuid.uuid4()}.json"
         with io.BytesIO(json_bytes) as f:
             upload_to_s3(f, chat_s3_key)
         
