@@ -41,15 +41,15 @@ class PDFExtractionSettings(BaseSettings):
     extraction_api_url: str = Field(default="https://point9-extract-text-and-table.hf.space/api/text",description="URL for PDF text extraction API")
     
     start_page: int = Field(default=1,ge=1,description="Default start page for extraction")
-    end_page: int = Field(default=100,ge=1,description="Default end page for extraction")
+    end_page: int = Field(default=1000,ge=1,description="Default end page for extraction")
     request_timeout: int = Field(default=120,description="API request timeout in seconds")
 
 
 class BOQExtractionSettings(BaseSettings):
     """BOQ extraction specific configuration."""
     
-    batch_size: int = Field(default=75,ge=1,le=100,description="Number of chunks per batch for BOQ extraction")
-    max_prompt_length: int = Field(default=100000,description="Maximum characters in extraction prompt")
+    batch_size: int = Field(default=500,ge=1,le=1000,description="Number of chunks per batch for BOQ extraction")
+    max_prompt_length: int = Field(default=600000,description="Maximum characters in extraction prompt")
     page_search_length: int = Field(default=30,description="Characters to use for page detection search")
     source_max_length: int = Field(default=50,description="Maximum length for source column")
 
