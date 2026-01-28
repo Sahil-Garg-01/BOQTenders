@@ -60,11 +60,14 @@ class PDFExtractor:
         
         with open(pdf_path, 'rb') as f:
             files = {'file': (os.path.basename(pdf_path), f, 'application/pdf')}
-            data = {
-                'start_page': start_page,
-                'end_page': end_page,
-                'filename': os.path.basename(pdf_path)
-            }
+            data = {'filename': os.path.basename(pdf_path)}
+            
+            # Only add page parameters if explicitly set 
+            if start_page is not None:
+                data['start_page'] = start_page
+            if end_page is not None:
+                data['end_page'] = end_page
+            
             headers = {'Authorization': f'Bearer {self.api_token}'}
             
             response = requests.post(

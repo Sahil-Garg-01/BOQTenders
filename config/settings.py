@@ -40,8 +40,8 @@ class PDFExtractionSettings(BaseSettings):
     hf_api_token: str = Field(default_factory=lambda: os.getenv("HF_API_TOKEN"),description="HuggingFace API token")
     extraction_api_url: str = Field(default="https://point9-extract-text-and-table.hf.space/api/text",description="URL for PDF text extraction API")
     
-    start_page: int = Field(default=1,ge=1,description="Default start page for extraction")
-    end_page: int = Field(default=1000,ge=1,description="Default end page for extraction")
+    start_page: Optional[int] = Field(default=None,ge=1,description="Default start page for extraction")
+    end_page: Optional[int] = Field(default=None,ge=1,description="Default end page for extraction")
     request_timeout: int = Field(default=120,description="API request timeout in seconds")
 
 
