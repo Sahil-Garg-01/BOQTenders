@@ -103,17 +103,17 @@ class BOQExtractor:
             return None
         
         parts = [p.strip() for p in line.split('|')]
-        if len(parts) < 8:
-            parts += ['NA'] * (8 - len(parts))
+        if len(parts) < 9:
+            parts += ['NA'] * (9 - len(parts))
         
         # Add source column
         parts.append("Unknown")
         
-        # Detect page source
-        desc = parts[2]
-        parts[8] = self._detect_page_source(desc, batch_text)
+        # Detect page source (description is now at position 3)
+        desc = parts[3]
+        parts[9] = self._detect_page_source(desc, batch_text)
         
-        return '|'.join(parts[:9])
+        return '|'.join(parts[:10])
     
     def _extract_from_batch(self, batch_text: str, batch_num: int, previous_boq: Optional[str] = None, boq_mode: list = None, specific_boq: str = None) -> List[str]:
         """
@@ -218,25 +218,32 @@ No BOQ items were found in this document.'''
 No BOQ items were found in this document.'''
         
         # Determine which columns have data
-        cols_present = [False] * 9
+        cols_present = [False] * 10
         normalized_items = []
         
         for item in filtered_items:
             parts = [p.strip() for p in item.split('|')]
-            if len(parts) < 9:
-                parts += ['NA'] * (9 - len(parts))
-            normalized_items.append(parts[:9])
+            if len(parts) < 10:
+                parts += ['NA'] * (10 - len(parts))
+            normalized_items.append(parts[:10])
             
-            for i in range(9):
+            for i in range(10):
                 if parts[i] and parts[i].upper() != 'NA':
                     cols_present[i] = True
         
-        # Build column indices (always include item code and description)
+        # Build column indices (always include item code, category, description, unit rate, and total amount)
         col_indices = [i for i, present in enumerate(cols_present) if present]
         if 0 not in col_indices:
-            col_indices.insert(0, 0)
+            col_indices.append(0)
         if 2 not in col_indices:
-            col_indices.insert(1, 2)
+            col_indices.append(2)
+        if 3 not in col_indices:
+            col_indices.append(3)
+        if 6 not in col_indices:
+            col_indices.append(6)
+        if 7 not in col_indices:
+            col_indices.append(7)
+        col_indices.sort()  # Maintain column order
         
         # Build header and separator rows
         header_row = '| ' + ' | '.join([BOQ_COLUMN_HEADERS[i] for i in col_indices]) + ' |\n'
@@ -253,16 +260,19 @@ No BOQ items were found in this document.'''
         # Add data rows
         for parts in normalized_items:
             # Truncate source if too long
-            parts[8] = parts[8][:self.source_max_length] if len(parts[8]) > self.source_max_length else parts[8]
+            parts[9] = parts[9][:self.source_max_length] if len(parts[9]) > self.source_max_length else parts[9]
             row_vals = [parts[i] for i in col_indices]
             
-            # Format confidence score
-            if 7 in col_indices:
-                conf_idx = col_indices.index(7)
+            # Format confidence score (now at position 8)
+            if 8 in col_indices:
+                conf_idx = col_indices.index(8)
                 if row_vals[conf_idx] != 'NA':
                     row_vals[conf_idx] = row_vals[conf_idx].rstrip('%') + '%'
-                    if parts[8] == "Unknown":
+                    if parts[9] == "Unknown":
                         row_vals[conf_idx] = "N/A"
+            
+            # Replace NA with dash for display
+            row_vals = ['-' if val == 'NA' else val for val in row_vals]
             
             formatted_boq += '| ' + ' | '.join(row_vals) + ' |\n'
         
@@ -347,7 +357,7 @@ No BOQ items were found in this document.'''
                 # Extract data rows
                 if in_table and stripped.startswith('|') and stripped.endswith('|'):
                     # Make sure it's not the header again (check for header keywords)
-                    if not any(keyword in stripped for keyword in ['S.No', 'Item Code', 'Item No/Code', 'Item Name', 'Item Description', 'Quantity', 'Unit', 'Confidence Score']):
+                    if not any(keyword in stripped for keyword in ['S.No', 'Item Code', 'Item No/Code', 'Item Name', 'Item No.', 'Category', 'Item Description', 'Quantity', 'Unit', 'Confidence Score']):
                         items_in_run.append(stripped)
             
             logger.info(f'Run {run_idx}: Header found={header_found}, Extracted {len(items_in_run)} items')
@@ -394,14 +404,16 @@ No BOQ items were found in this document.'''
         output_lines.append('## DETAILED BILL OF QUANTITIES')
         output_lines.append(f'**Total Items Found:** {len(unique_items)}')
         output_lines.append('')
-        output_lines.append('| Item No/Code | Item Name | Item Description | Quantity | Unit | Confidence Score | Source |')
-        output_lines.append('|--------------|-----------|------------------|----------|------|------------------|--------|')
+        output_lines.append('| Item No. | Item Name | Category | Description | Quantity | Unit | Unit Rate (₹) | Total Amount (₹) | Confidence Score | Source |')
+        output_lines.append('|---------|-----------|----------|-------------|----------|------|-----------------|---------------------|-----------------|--------|')
         
         # Re-number items
         for idx, item_line in enumerate(unique_items, 1):
             parts = [p.strip() for p in item_line.split('|') if p.strip()]
             if parts:
                 parts[0] = str(idx)  # Update item number
+                # Replace NA with dash for display
+                parts = ['-' if p == 'NA' else p for p in parts]
                 output_lines.append('| ' + ' | '.join(parts) + ' |')
         
         merged_output = '\n'.join(output_lines) + '\n\n'

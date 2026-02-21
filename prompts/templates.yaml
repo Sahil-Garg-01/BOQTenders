@@ -76,20 +76,20 @@ boq_extraction_template: |
   - Total amounts
 
   If you find BOQ items, return them in this EXACT format (pipe-separated):
-  ITEM_CODE|ITEM_NAME|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
+  ITEM_NO|ITEM_NAME|CATEGORY|DESCRIPTION|QUANTITY|UNIT|UNIT_RATE|TOTAL_AMOUNT|CONFIDENCE
 
   Where:
-  - ITEM_NAME is a very short, direct name for the item (2-6 words max), focusing on the core item type and key specifications. Create it dynamically based on the description:
-    - Identify the main item (e.g., cable, conduit, light, switch, breaker, electrode)
-    - Include essential specs in parentheses (e.g., size, wattage, voltage)
-    - Remove redundant words like "supplying and fixing", "installation of"
-    - Examples: "Cable (185 sq.mm)", "LED Downlight (36W)", "PVC Conduit (20mm)", "MCB (63A)", "Earth Electrode"
-  - DESCRIPTION is the complete, full description as it appears in the document
-  - CONFIDENCE is a score (0-100%) based on how clearly and completely the data appears in the text. Use lower scores (e.g., 70-90%) if information is partially missing, inferred, or unclear. Use 100% only for complete, directly stated data.
+  - ITEM_NO: Item number or code
+  - ITEM_NAME: Short, concise name for the item (2-6 words max, e.g., "Cable Supply", "LED Downlight (36W)", "PVC Conduit (20mm)")
+  - CATEGORY: Item category/type (e.g., Materials, Labor, Equipment, Services)
+  - DESCRIPTION: Complete description as it appears in the document (include full specs, standards, etc.)
+  - QUANTITY: Numeric quantity value
+  - UNIT: Unit of measurement (Nos, Sqm, Cum, m, kg, Mtrs, etc.)
+  - UNIT_RATE: Unit price/rate in currency
+  - TOTAL_AMOUNT: Total amount (quantity × rate)
+  - CONFIDENCE: Score (0-100%) based on how clearly data appears in text. Lower scores (70-90%) for partial/inferred data, 100% for complete stated data.
 
-  Rules for columns:
-  - If an entire column has no values, omit that column.
-  - For missing values, use "NA".
+  IMPORTANT: Always include ALL columns in the output format, even if some values are "NA". Do NOT omit columns.
 
   Return multiple items on separate lines. If NO BOQ items are found, return: "NO_BOQ_ITEMS"
 
@@ -124,7 +124,7 @@ boq_improvement_template: |
   ✗ Item is outside the specified extraction scope/constraint
   
   **Return format (pipe-separated):**
-  ITEM_CODE|ITEM_NAME|DESCRIPTION|QUANTITY|UNIT|RATE|AMOUNT|CONFIDENCE
+  ITEM_NO|ITEM_NAME|CATEGORY|DESCRIPTION|QUANTITY|UNIT|UNIT_RATE|TOTAL_AMOUNT|CONFIDENCE
   
   **Examples:**
   - Previous has Item 1-46, you find Item 47 → Extract Item 47
@@ -135,12 +135,13 @@ boq_improvement_template: |
 
 # Column headers for BOQ output table
 boq_column_headers:
-  - "Item No/Code"
+  - "Item No."
   - "Item Name"
-  - "Item Description"
+  - "Category"
+  - "Description"
   - "Quantity"
   - "Unit"
-  - "Rate"
-  - "Amount"
+  - "Unit Rate (₹)"
+  - "Total Amount (₹)"
   - "Confidence Score"
   - "Source"

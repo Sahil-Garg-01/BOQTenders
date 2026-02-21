@@ -93,7 +93,7 @@ class ConsistencyChecker:
                 if len(parts) > confidence_idx:
                     try:
                         conf_str = parts[confidence_idx]
-                        if conf_str and conf_str != 'NA' and conf_str != 'N/A':
+                        if conf_str and conf_str not in ('NA', 'N/A', '-'):
                             conf_str = conf_str.rstrip('%')
                             conf = float(conf_str)
                             confidences.append(conf)
