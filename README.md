@@ -10,7 +10,7 @@ pinned: false
 
 # BOQTenders - Bill of Quantities Extractor
 
-A modular, production-ready system for extracting Bill of Quantities (BOQ) from tender documents using LangChain RAG and Google Gemini LLM.
+A stateful agent system for extracting Bill of Quantities (BOQ) from tender documents and enabling document chat using LangGraph, LangChain, and Google Gemini LLM.
 
 ## 🏗️ Architecture
 
@@ -19,15 +19,18 @@ BOQTenders/
 ├── config/
 │   └── settings.py         # Pydantic settings with all configurable parameters
 ├── core/
+│   ├── agent.py            # LangGraph-based agent for workflow orchestration
 │   ├── pdf_extractor.py    # PDF text extraction via HuggingFace API
 │   ├── embeddings.py       # Text chunking and FAISS vector store
 │   ├── llm.py              # Google Gemini LLM client wrapper
 │   └── rag_chain.py        # RAG chain builder for document Q&A
 ├── services/
-│   ├── boq_extractor.py    # BOQ extraction service
-│   └── consistency.py      # Consistency checking service
+│   ├── boq_extractor.py    # BOQ extraction service with iterative consistency
+│   ├── consistency.py      # Consistency checking service
+│   ├── mongo_store.py      # MongoDB event logging
+│   └── s3_utils.py         # AWS S3 file storage
 ├── api/
-│   ├── routes.py           # FastAPI routes
+│   ├── routes.py           # FastAPI routes for /get_boq and /chat
 │   └── schemas.py          # Pydantic request/response models
 ├── prompts/
 │   ├── get_prompts.py      # Prompt loader
@@ -47,162 +50,111 @@ BOQTenders/
   - Unit prices, total amounts
   - Confidence scores for each item
   - Source page references
-- **💬 Document Chat**: Ask questions about the document using RAG
-- **📊 Consistency Check**: Validate extraction reliability across multiple runs
-- **🔑 User-Provided API Key**: Google API key is provided by users at runtime (not stored)
-- **🐳 Docker Ready**: Deployable to Hugging Face Spaces or any Docker environment
+- **🔄 Consistency Checking**: Iterative extraction with multiple runs for accuracy
+- **💬 Document Chat**: Ask questions about processed documents using RAG
+- **🗂️ Stateful Agent**: LangGraph workflow for one-time extraction + multiple chats
+- **📊 Logging & Storage**: MongoDB event logging and S3 file storage
+- **🌐 Web UI**: Streamlit interface for easy document upload and interaction
+- **🚀 API**: FastAPI backend for programmatic access
 
 ## 🚀 Quick Start
 
-### Option 1: Hugging Face Spaces (Live Demo)
+### Prerequisites
+- Python 3.8+
+- Google Gemini API key
+- MongoDB (optional, for logging)
+- AWS S3 (optional, for file storage)
 
-Visit: [BOQ Tenders Agent Space](https://huggingface.co/spaces/point9/BOQ_of_Tenders_Agent)
+### Installation
 
-1. Enter your Google Generative AI API key in the sidebar
-2. Upload a PDF tender document
-3. View extracted BOQ and chat with your document
+1. Clone the repository:
+   ```bash
+   git clone <repository-url>
+   cd BOQTenders
+   ```
 
-### Option 2: Local Setup
+2. Create virtual environment:
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+   ```
 
-```bash
-# Clone the repository
-git clone https://github.com/Sahil-Garg-01/BOQTenders.git
-cd BOQTenders
+3. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-# Create virtual environment
-python -m venv .venv
-.venv\Scripts\activate  # Windows
-# source .venv/bin/activate  # Linux/Mac
+4. Set up environment variables in `.env`:
+   ```env
+   GOOGLE_API_KEY=your_gemini_api_key
+   HF_API_TOKEN=your_huggingface_token
+   LOG_LEVEL=DEBUG
+   # Optional: MongoDB and S3 configs
+   ```
 
-# Install dependencies
-pip install -r requirements.txt
-```
+### Usage
 
-### Option 3: Docker
-
-```bash
-# Build and run
-docker build -t boqtenders .
-docker run -p 8000:8000 -p 8501:8501 -e HF_API_TOKEN=your_token boqtenders
-```
-
-## 🖥️ Running the Application
-
-**Streamlit UI (Recommended):**
+#### Streamlit UI
 ```bash
 streamlit run streamlit_app.py
 ```
-Access at: http://localhost:8501
+- Upload PDF, enter API key, process document for BOQ extraction.
+- Chat with the document using the same API key.
 
-**FastAPI Server:**
+#### FastAPI Backend
 ```bash
 uvicorn app:app --reload
 ```
-Access API docs at: http://localhost:8000/docs
 
-## 📡 API Endpoints
+#### API Endpoints
+- `POST /get_boq`: Extract BOQ from uploaded PDF
+- `POST /chat`: Chat with processed document
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/upload` | Upload PDF for processing (requires `api_key` form field) |
-| POST | `/chat` | Chat with document |
-| POST | `/consistency` | Run consistency check |
-| GET | `/clear` | Clear session |
+## 📚 API Documentation
 
-### Example Usage
-
-```python
-import requests
-
-# Upload PDF with API key
-with open("tender.pdf", "rb") as f:
-    response = requests.post(
-        "http://localhost:8000/upload",
-        files={"file": f},
-        data={"api_key": "your-google-api-key"}
-    )
-print(response.json()["output"])
-
-# Chat with document
-response = requests.post(
-    "http://localhost:8000/chat",
-    json={"question": "What is the total steel quantity?"}
-)
-print(response.json()["answer"])
+### Extract BOQ
+```bash
+curl -X POST "http://localhost:8000/get_boq" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "file": "base64_encoded_pdf",
+       "api_key": "your_api_key",
+       "runs": 2,
+       "boq_mode": ["default"]
+     }'
 ```
 
-## ⚙️ Configuration
-
-### Environment Variables
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `HF_API_TOKEN` | Yes | HuggingFace API token for PDF extraction |
-| `GOOGLE_API_KEY` | No | Optional default (users provide at runtime) |
-
-### LLM Settings (via config/settings.py)
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `model_name` | `gemini-2.5-flash-lite` | Google Gemini model |
-| `temperature` | `0.0` | Generation temperature |
-| `max_output_tokens` | `8192` | Max output tokens |
-
-### Embedding Settings
-
-| Setting | Default | Description |
-|---------|---------|-------------|
-| `embedding_model` | `sentence-transformers/all-MiniLM-L6-v2` | HuggingFace model |
-| `chunk_size` | `1000` | Text chunk size |
-| `chunk_overlap` | `500` | Chunk overlap |
-
-## 📝 BOQ Output Format
-
-Extracted BOQ is returned in markdown format:
-
-```markdown
-## DOCUMENT SUMMARY
-Project: XYZ Construction
-Date: 2024-01-15
-...
-
-## DETAILED BILL OF QUANTITIES
-**Total Items Found:** 25
-
-| Item Code | Description | Unit | Quantity | Unit Price | Total | Confidence | Source |
-|-----------|-------------|------|----------|------------|-------|------------|--------|
-| A001 | Steel reinforcement | MT | 500 | 85000 | 42500000 | 92% | Page 5 |
-...
+### Chat with Document
+```bash
+curl -X POST "http://localhost:8000/chat" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "process_id": "session_id",
+       "question": "What is the total quantity?",
+       "api_key": "your_api_key"
+     }'
 ```
 
-## 🧪 Consistency Checking
+## 🛠️ Development
 
-Run multiple extraction passes to validate reliability:
+### Project Structure
+- `core/agent.py`: Main LangGraph agent with simplified workflow
+- `api/routes.py`: FastAPI endpoints using agent
+- `streamlit_app.py`: Web UI with session management
+- `services/`: Business logic for extraction, consistency, storage
 
-```python
-# Via API
-response = requests.post("http://localhost:8000/consistency?runs=4")
-print(f"Consistency: {response.json()['consistency_score']}%")
-```
-
-Results include:
-- **Consistency Score**: Average pairwise similarity (%)
-- **Average Confidence**: Mean confidence across all items
-- **Success Rate**: Proportion of successful extractions
-
-## 🔐 Security
-
-- **Google API Key**: Provided by users at runtime, never stored on server
-- **HF API Token**: Set as environment variable/secret (for PDF extraction)
-- **No data persistence**: Documents are processed in memory only
-
-## 📄 License
-
-MIT License
+### Key Components
+- **Agent Workflow**: Linear extraction graph + direct chat calls
+- **State Management**: AgentState TypedDict for workflow state
+- **Error Handling**: Graceful failures with logging
 
 ## 🤝 Contributing
 
 1. Fork the repository
 2. Create a feature branch
-3. Make your changes
+3. Make changes with tests
 4. Submit a pull request
+
+## 📄 License
+
+MIT License - see LICENSE file for details.

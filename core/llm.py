@@ -17,16 +17,16 @@ class LLMClient:
         response = client.invoke("What is a BOQ?")
     """
     
-    def __init__(self, api_key: str, model_name: str = None, temperature: float = None):
+    def __init__(self, api_key: Optional[str] = None, model_name: str = None, temperature: float = None):
         """
         Initialize LLM client.
         
         Args:
-            api_key: Google API key. Required.
+            api_key: Google API key. If None, uses from settings.
             model_name: Model to use. Defaults to config value.
             temperature: Sampling temperature. Defaults to config value.
         """
-        self.api_key = api_key
+        self.api_key = api_key or settings.GOOGLE_API_KEY
         self.model_name = model_name or settings.llm.model_name
         self.temperature = temperature if temperature is not None else settings.llm.temperature
         

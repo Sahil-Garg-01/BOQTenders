@@ -17,11 +17,7 @@ import streamlit as st
 from loguru import logger
 
 from config.settings import settings
-from core.pdf_extractor import PDFExtractor
-from core.embeddings import EmbeddingService
-from core.rag_chain import RAGChainBuilder
-from services.boq_extractor import BOQExtractor
-from services.consistency import ConsistencyChecker
+from core.agent import BOQAgent
 
 # Configure logging
 logger.remove()
@@ -33,16 +29,10 @@ logger.add(
 
 
 def initialize_services(api_key: str):
-    """Initialize all services with API key (cached)."""
-    if "services_initialized" not in st.session_state or st.session_state.get("current_api_key") != api_key:
-        from core.llm import LLMClient
-        llm_client = LLMClient(api_key=api_key)
-        st.session_state.pdf_extractor = PDFExtractor()
-        st.session_state.embedding_service = EmbeddingService()
-        st.session_state.rag_builder = RAGChainBuilder(llm_client=llm_client)
-        st.session_state.boq_extractor = BOQExtractor(llm_client=llm_client)
-        st.session_state.consistency_checker = ConsistencyChecker(boq_extractor=st.session_state.boq_extractor)
-        st.session_state.services_initialized = True
+    """Initialize agent with API key (cached)."""
+    if "agent_initialized" not in st.session_state or st.session_state.get("current_api_key") != api_key:
+        st.session_state.agent = BOQAgent()
+        st.session_state.agent_initialized = True
         st.session_state.current_api_key = api_key
 
 
@@ -65,7 +55,7 @@ def initialize_session_state():
 
 def process_pdf(uploaded_file, runs: int, boq_mode: list, specific_boq: str) -> bool:
     """
-    Process uploaded PDF file.
+    Process uploaded PDF file using LangGraph agent.
     
     Args:
         uploaded_file: Streamlit uploaded file
@@ -84,42 +74,29 @@ def process_pdf(uploaded_file, runs: int, boq_mode: list, specific_boq: str) -> 
                 temp_path = temp_file.name
             
             try:
-                # Extract text
-                st.info("Extracting text from PDF...")
-                text = st.session_state.pdf_extractor.extract_text(temp_path, filename=uploaded_file.name)
+                # Process with agent
+                result = st.session_state.agent.process_document(
+                    file_path=temp_path,
+                    file_name=uploaded_file.name,
+                    api_key=st.session_state.current_api_key,
+                    runs=runs,
+                    boq_mode=boq_mode,
+                    specific_boq=specific_boq,
+                    action="extract_boq"
+                )
                 
-                if not text:
-                    st.error("Could not extract text from PDF")
+                if result["error"]:
+                    st.error(f"Processing failed: {result['error']}")
                     return False
                 
-                # Create embeddings
-                st.info("Creating embeddings...")
-                chunks = st.session_state.embedding_service.split_text(text)
-                vector_store = st.session_state.embedding_service.create_vector_store(chunks)
-                
-                # Extract BOQ iteratively
-                st.info(f"Extracting BOQ items ({runs} runs)...")
-                final_boq, all_outputs = st.session_state.boq_extractor.extract_iterative(chunks, vector_store, runs, boq_mode, specific_boq)
-                
-                # Compute consistency
-                consistency = st.session_state.consistency_checker.check_from_outputs(all_outputs)
-                
-                boq_output = final_boq
-                
-                # Build QA chain
-                st.info("Building chat interface...")
-                qa_chain = st.session_state.rag_builder.build(vector_store)
-                
-                # Store in session
-                st.session_state.chunks = chunks
-                st.session_state.vector_store = vector_store
-                st.session_state.boq_output = boq_output
-                st.session_state.consistency = consistency
-                st.session_state.qa_chain = qa_chain
+                # Store results in session
+                st.session_state.boq_output = result["boq_output"]
+                st.session_state.consistency = result["consistency"]
+                st.session_state.qa_chain = result.get("qa_chain")  # Agent should return this
                 st.session_state.document_loaded = True
                 st.session_state.chat_history = []
                 
-                st.success(f"Processed the document")
+                st.success("Document processed successfully")
                 return True
                 
             finally:
@@ -132,7 +109,7 @@ def process_pdf(uploaded_file, runs: int, boq_mode: list, specific_boq: str) -> 
 
 
 def render_chat_interface():
-    """Render the chat interface."""
+    """Render the chat interface using agent."""
     st.subheader("💬 Chat with Document")
     
     if not st.session_state.document_loaded:
@@ -156,8 +133,13 @@ def render_chat_interface():
         
         with st.spinner("Thinking..."):
             try:
-                response = st.session_state.qa_chain.invoke({"question": prompt})
-                answer = response.get("answer", "I couldn't find an answer.")
+                # Use agent for chat
+                answer = st.session_state.agent.chat_with_document(
+                    process_id="streamlit_session",  # Use a fixed ID for Streamlit
+                    question=prompt,
+                    qa_chain=st.session_state.qa_chain,
+                    chat_history=st.session_state.chat_history
+                )
                 
                 st.session_state.chat_history.append({"role": "assistant", "content": answer})
                 st.chat_message("assistant").write(answer)
@@ -318,7 +300,7 @@ def render_sidebar():
         # Clear session
         if st.button("🗑️ Clear Session"):
             for key in list(st.session_state.keys()):
-                if key not in ["services_initialized", "current_api_key"]:
+                if key not in ["agent_initialized", "current_api_key"]:
                     del st.session_state[key]
             initialize_session_state()
             st.success("Session cleared!")

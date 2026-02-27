@@ -1,5 +1,5 @@
 """
-FastAPI routes for BOQ extraction API.
+FastAPI routes for BOQ extraction API using LangGraph agent.
 """
 import io
 import json
@@ -13,11 +13,7 @@ from fastapi import APIRouter, File, UploadFile, HTTPException, Form
 from loguru import logger
 
 from config.settings import settings
-from core.pdf_extractor import PDFExtractor
-from core.embeddings import EmbeddingService
-from core.rag_chain import RAGChainBuilder
-from services.boq_extractor import BOQExtractor
-from services.consistency import ConsistencyChecker
+from core.agent import BOQAgent
 from services.s3_utils import upload_to_s3, generate_presigned_get_url
 from services.mongo_store import insert_event, list_latest_events_for_service, get_latest_event_for_process
 from api.schemas import (
@@ -31,29 +27,26 @@ from api.schemas import (
 # Create API router
 router = APIRouter()
 
-# Global state for session data
+# Global agent instance
+_agent = None
+
+# Global session state (for single-user API)
 _session_state = {
     "qa_chain": None,
     "vector_store": None,
     "chunks": None,
     "api_key": None,
+    "process_id": None,
+    "boq_output": None,
+    "consistency": None,
+    "chat_history": [],
 }
 
-# Services will be initialized lazily to avoid startup timeout
-_pdf_extractor = None
-_embedding_service = None
-
-def get_pdf_extractor():
-    global _pdf_extractor
-    if _pdf_extractor is None:
-        _pdf_extractor = PDFExtractor()
-    return _pdf_extractor
-
-def get_embedding_service():
-    global _embedding_service
-    if _embedding_service is None:
-        _embedding_service = EmbeddingService()
-    return _embedding_service
+def get_agent():
+    global _agent
+    if _agent is None:
+        _agent = BOQAgent()
+    return _agent
 
 
 
@@ -65,11 +58,10 @@ def get_embedding_service():
 )
 async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: int = Form(2), boq_mode: str = Form(None), specific_boq: str = Form(None)):
     """
-    Get BOQ from a PDF file with iterative improvement and consistency checking.
+    Get BOQ from a PDF file using LangGraph agent.
     
-    - Extracts text from PDF
-    - Creates embeddings and vector store
-    - Extracts BOQ items iteratively (runs 1-5)
+    - Processes PDF through agent workflow
+    - Extracts BOQ items with iterative improvement
     - Computes consistency metrics
     - Sets up QA chain for chat
     
@@ -80,12 +72,6 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
     - boq_mode: JSON list of modes ["default"] or ["specific BOQ"] or both
     - specific_boq: Specific BOQ name to extract (if "specific BOQ" in boq_mode)
     """
-    global _session_state
-    
-    # Generate unique process ID
-    process_id = str(uuid.uuid4())
-    service = "get_boq"
-    created_at = datetime.now(timezone.utc).isoformat()
     
     if not file:
         raise HTTPException(status_code=400, detail="No file provided")
@@ -116,6 +102,7 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
             temp_path = temp_file.name
         
         # Upload to S3
+        process_id = str(uuid.uuid4())
         s3_key = f"uploads/{process_id}_{file.filename}"
         upload_success = upload_to_s3(temp_path, s3_key)
         input_url = generate_presigned_get_url(s3_key) if upload_success else None
@@ -123,135 +110,68 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
         # Log created event
         insert_event({
             "id": process_id,
-            "timestamp": created_at,
-            "service": service,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "service": "get_boq",
             "status": "created",
             "filename": file.filename,
             "input_file_path": input_url,
         })
         
-        try:
-            # Extract text from PDF
-            logger.info('Extracting text from PDF...')
-            text = get_pdf_extractor().extract_text(temp_path, filename=file.filename)
-            
-            if not text:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Could not extract text from PDF"
-                )
-            
-            # Progress update
-            insert_event({
-                "id": process_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "service": service,
-                "current_step": "text_extraction",
-                "status": "in_progress",
-            })
-            
-            # Create LLM client with user API key
-            from core.llm import LLMClient
-            llm_client = LLMClient(api_key=api_key)
-            
-            # Create services with the LLM client
-            boq_extractor_with_key = BOQExtractor(llm_client=llm_client)
-            rag_builder_with_key = RAGChainBuilder(llm_client=llm_client)
-            
-            # Create chunks and vector store
-            logger.info('Creating embeddings...')
-            embedding_svc = get_embedding_service()
-            chunks = embedding_svc.split_text(text)
-            vector_store = embedding_svc.create_vector_store(chunks)
-            
-            # Progress update
-            insert_event({
-                "id": process_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "service": service,
-                "current_step": "embedding_creation",
-                "status": "in_progress",
-            })
-            
-            # Extract BOQ
-            logger.info('Extracting BOQ...')
-            final_boq, all_outputs = boq_extractor_with_key.extract_iterative(chunks, vector_store, runs, boq_mode_list, specific_boq)
-            consistency_checker_with_key = ConsistencyChecker(boq_extractor=boq_extractor_with_key)
-            consistency = consistency_checker_with_key.check_from_outputs(all_outputs)
-            boq_output = final_boq
-            
-            # Upload BOQ output to S3
-            s3_data = {
-                "output": boq_output,
-                "consistency_score": consistency.get("consistency_score"),
-                "runs": consistency.get("runs"),
-                "successful_runs": consistency.get("successful_runs"),
-                "avg_confidence": consistency.get("avg_confidence")
-            }
-            json_bytes = json.dumps(s3_data, ensure_ascii=False, indent=2).encode('utf-8')
-            output_s3_key = f"outputs/boq_{process_id}.json"
-            with io.BytesIO(json_bytes) as f:
-                upload_to_s3(f, output_s3_key)
-            
-            # Progress update
-            insert_event({
-                "id": process_id,
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "service": service,
-                "current_step": "boq_extraction",
-                "status": "in_progress",
-            })
-            
-            # Build QA chain
-            logger.info('Building QA chain...')
-            qa_chain = rag_builder_with_key.build(vector_store)
-            
-            # Store in session state
-            _session_state["qa_chain"] = qa_chain
-            _session_state["vector_store"] = vector_store
-            _session_state["chunks"] = chunks
-            _session_state["api_key"] = api_key
-            _session_state["process_id"] = process_id
-            
-            logger.info(f'BOQ extraction completed: {len(chunks)} chunks created')
-            
-            # Completed event
-            finished_at = datetime.now(timezone.utc).isoformat()
-            insert_event({
-                "id": process_id,
-                "timestamp": finished_at,
-                "service": service,
-                "status": "completed",
-                "answer": boq_output,
-                "runs": runs,
-            })
-            
-            return GetBoqResponse(
-                message="success",
-                output=boq_output,
-                consistency_score=consistency.get("consistency_score"),
-                runs=consistency.get("runs"),
-                successful_runs=consistency.get("successful_runs"),
-                avg_confidence=consistency.get("avg_confidence")
-            )
-            
-        finally:
-            # Clean up temp file
-            Path(temp_path).unlink(missing_ok=True)
-            
+        # Process with agent
+        agent = get_agent()
+        initial_state = {
+            "process_id": process_id,
+            "api_key": api_key,
+            "file_path": temp_path,
+            "file_name": file.filename,
+            "action": "extract_boq",
+            "runs": runs,
+            "boq_mode": boq_mode_list,
+            "specific_boq": specific_boq,
+            "question": None,
+            "chat_history": [],
+            "extracted_text": None,
+            "chunks": None,
+            "vector_store": None,
+            "boq_output": None,
+            "consistency": None,
+            "qa_chain": None,
+            "error": None,
+        }
+        result = agent.run(initial_state)
+        
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
+        
+        # Store session for chat
+        global _session_state
+        _session_state = {
+            "qa_chain": result.get("qa_chain"),
+            "vector_store": result.get("vector_store"),
+            "chunks": result.get("chunks"),
+            "process_id": result["process_id"],
+            "api_key": api_key,
+            "chat_history": result.get("chat_history", []),
+        }
+        
+        return GetBoqResponse(
+            message="success",
+            output=result["boq_output"],
+            consistency_score=result["consistency"].get("consistency_score", 0),
+            runs=result["consistency"].get("runs", runs),
+            successful_runs=result["consistency"].get("successful_runs", 0),
+            avg_confidence=result["consistency"].get("avg_confidence", 0)
+        )
+        
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f'Error processing BOQ extraction: {e}')
-        # Failed event
-        insert_event({
-            "id": process_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "service": service,
-            "status": "failed",
-            "error_message": str(e),
-        })
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        # Clean up temp file
+        if 'temp_path' in locals():
+            Path(temp_path).unlink(missing_ok=True)
 
 
 @router.post(
@@ -262,7 +182,7 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
 )
 async def chat(request: ChatRequest):
     """
-    Ask a question about the processed document.
+    Ask a question about the processed document using LangGraph agent.
     
     Requires a document to be processed first via /get_boq endpoint.
     """
@@ -275,47 +195,40 @@ async def chat(request: ChatRequest):
         )
     
     try:
-        logger.info(f'Processing chat question: {request.question[:50]}...')
-        
-        # Log question event
-        chat_process_id = str(uuid.uuid4())
-        insert_event({
-            "id": chat_process_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "service": "chat",
-            "event_type": "question",
-            "status": "created",
+        agent = get_agent()
+        state = {
+            "process_id": _session_state.get("process_id"),
+            "api_key": _session_state.get("api_key"),
+            "vector_store": _session_state.get("vector_store"),
+            "qa_chain": _session_state.get("qa_chain"),
+            "chunks": _session_state.get("chunks"),
+            "action": "chat",
             "question": request.question,
-        })
+            "chat_history": _session_state.get("chat_history", []),
+            "runs": 1,
+            "boq_mode": [],
+            "specific_boq": None,
+            "file_path": None,
+            "file_name": None,
+            "extracted_text": None,
+            "boq_output": None,
+            "consistency": None,
+            "error": None,
+        }
+        result = agent.run(state)
         
-        qa_chain = _session_state["qa_chain"]
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
         
-        # Get response from QA chain using invoke (updated from deprecated __call__)
-        response = qa_chain.invoke({"question": request.question})
+        # Update session with new chat history
+        _session_state["chat_history"] = result.get("chat_history", [])
         
-        answer = response.get("answer", "")
-        
-        # Upload chat data to S3
-        chat_data = {"question": request.question, "answer": answer}
-        json_bytes = json.dumps(chat_data, ensure_ascii=False, indent=2).encode('utf-8')
-        chat_s3_key = f"chats/{_session_state['process_id']}_chat_{uuid.uuid4()}.json"
-        with io.BytesIO(json_bytes) as f:
-            upload_to_s3(f, chat_s3_key)
-        
-        # Log answer event
-        insert_event({
-            "id": chat_process_id,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "service": "chat",
-            "event_type": "answer",
-            "status": "completed",
-            "answer": answer,
-        })
-        
-        logger.info('Chat response generated')
+        answer = result.get("answer", "No answer generated.")
         
         return ChatResponse(answer=answer)
         
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f'Error processing chat: {e}')
         raise HTTPException(status_code=500, detail=str(e))
@@ -333,6 +246,11 @@ async def clear_session():
         "qa_chain": None,
         "vector_store": None,
         "chunks": None,
+        "api_key": None,
+        "process_id": None,
+        "boq_output": None,
+        "consistency": None,
+        "chat_history": [],
     }
     
     logger.info('Session cleared')
