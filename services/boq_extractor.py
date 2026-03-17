@@ -3,6 +3,7 @@ BOQ extraction service for extracting Bill of Quantities from documents.
 """
 import re
 from typing import List, Optional, Tuple
+from contextlib import nullcontext
 from loguru import logger
 from langchain_core.documents import Document
 from langchain_community.vectorstores import FAISS
@@ -15,6 +16,13 @@ from prompts.get_prompts import (
     BOQ_IMPROVEMENT_TEMPLATE,
     BOQ_COLUMN_HEADERS,
 )
+
+# OpenTelemetry
+try:
+    from opentelemetry import trace
+    _tracer = trace.get_tracer(__name__)
+except ImportError:
+    _tracer = None
 
 # Page marker pattern for detecting source pages
 PAGE_MARKER_PATTERN = r"(?i)(?:---\s*)?page\s+(\d+)(?:\s*---)?"
@@ -54,15 +62,22 @@ class BOQExtractor:
     
     def _extract_metadata(self, chunks: List[Document]) -> str:
         """Extract document metadata from first few chunks."""
-        metadata_text = '\n\n'.join([chunk.page_content for chunk in chunks[:3]])
-        prompt = METADATA_EXTRACTION_TEMPLATE.format(
-            document_text=metadata_text[:2000]
-        )
-        
-        logger.info('Invoking LLM for metadata extraction...')
-        result = self.llm_client.invoke(prompt)
-        logger.info('Metadata extraction completed')
-        return result
+        with (_tracer.start_as_current_span("boq.extract_metadata") if _tracer else nullcontext()) as span:
+            metadata_chunks = chunks[:3]
+            metadata_text = '\n\n'.join([chunk.page_content for chunk in metadata_chunks])
+            prompt = METADATA_EXTRACTION_TEMPLATE.format(
+                document_text=metadata_text[:2000]
+            )
+
+            if span:
+                span.set_attribute("chunks.used", len(metadata_chunks))
+                span.set_attribute("metadata_text.length", len(metadata_text))
+                span.set_attribute("prompt.length", len(prompt))
+
+            logger.info('Invoking LLM for metadata extraction...')
+            result = self.llm_client.invoke(prompt)
+            logger.info('Metadata extraction completed')
+            return result
     
     def _detect_page_source(self, desc: str, batch_text: str) -> str:
         """
@@ -153,29 +168,43 @@ class BOQExtractor:
             base_prompt = base_prompt.replace("Text to analyze:", f"{extraction_instruction}\n\nText to analyze:")
             prompt = base_prompt.format(batch_text=prompt_text)
         
-        try:
-            logger.info(f'Invoking LLM for BOQ extraction on batch {batch_num}...')
-            result = self.llm_client.invoke(prompt)
-            logger.info(f'LLM response received for batch {batch_num}')
-            
-            if 'NO_BOQ_ITEMS' in result:
-                logger.info(f'No BOQ items found in batch {batch_num}')
+        with (_tracer.start_as_current_span("boq.extract_batch") if _tracer else nullcontext()) as span:
+            if span:
+                span.set_attribute("batch.num", int(batch_num))
+                span.set_attribute("batch.text.length", len(batch_text or ""))
+                span.set_attribute("prompt_text.length", len(prompt_text or ""))
+                span.set_attribute("prompt.length", len(prompt or ""))
+                span.set_attribute("previous_boq", int(previous_boq is not None))
+                if boq_mode:
+                    span.set_attribute("boq.mode", ",".join([str(m) for m in boq_mode]))
+                if specific_boq:
+                    span.set_attribute("boq.specific", str(specific_boq))
+
+            try:
+                logger.info(f'Invoking LLM for BOQ extraction on batch {batch_num}...')
+                result = self.llm_client.invoke(prompt)
+                logger.info(f'LLM response received for batch {batch_num}')
+
+                if 'NO_BOQ_ITEMS' in result:
+                    logger.info(f'No BOQ items found in batch {batch_num}')
+                    return []
+
+                boq_items = []
+                lines = result.strip().split('\n')
+
+                for line in lines:
+                    parsed = self._parse_boq_line(line, batch_text)
+                    if parsed:
+                        boq_items.append(parsed)
+
+                logger.info(f'Extracted {len(boq_items)} BOQ items from batch {batch_num}')
+                return boq_items
+
+            except Exception as e:
+                if span:
+                    span.record_exception(e)
+                logger.warning(f'Error processing batch {batch_num}: {e}')
                 return []
-            
-            boq_items = []
-            lines = result.strip().split('\n')
-            
-            for line in lines:
-                parsed = self._parse_boq_line(line, batch_text)
-                if parsed:
-                    boq_items.append(parsed)
-            
-            logger.info(f'Extracted {len(boq_items)} BOQ items from batch {batch_num}')
-            return boq_items
-            
-        except Exception as e:
-            logger.warning(f'Error processing batch {batch_num}: {e}')
-            return []
     
     def _format_output(self, unique_items: List[str], metadata_result: str) -> str:
         """

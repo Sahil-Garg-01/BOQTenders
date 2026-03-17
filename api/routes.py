@@ -23,6 +23,24 @@ from api.schemas import (
     ErrorResponse,
 )
 
+# OpenTelemetry metrics
+try:
+    from opentelemetry import metrics
+    meter = metrics.get_meter(__name__)
+    boq_extraction_counter = meter.create_counter(
+        "boq_extractions",
+        description="Number of BOQ extractions performed",
+        unit="1"
+    )
+    chat_requests_counter = meter.create_counter(
+        "chat_requests",
+        description="Number of chat requests processed",
+        unit="1"
+    )
+except ImportError:
+    boq_extraction_counter = None
+    chat_requests_counter = None
+
 
 # Create API router
 router = APIRouter()
@@ -154,6 +172,10 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
             "chat_history": result.get("chat_history", []),
         }
         
+        # Increment metrics
+        if boq_extraction_counter:
+            boq_extraction_counter.add(1, {"status": "success"})
+        
         return GetBoqResponse(
             message="success",
             output=result["boq_output"],
@@ -167,6 +189,8 @@ async def get_boq(file: UploadFile = File(...), api_key: str = Form(...), runs: 
         raise
     except Exception as e:
         logger.error(f'Error processing BOQ extraction: {e}')
+        if boq_extraction_counter:
+            boq_extraction_counter.add(1, {"status": "error"})
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         # Clean up temp file
@@ -225,12 +249,18 @@ async def chat(request: ChatRequest):
         
         answer = result.get("answer", "No answer generated.")
         
+        # Increment metrics
+        if chat_requests_counter:
+            chat_requests_counter.add(1, {"status": "success"})
+        
         return ChatResponse(answer=answer)
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f'Error processing chat: {e}')
+        if chat_requests_counter:
+            chat_requests_counter.add(1, {"status": "error"})
         raise HTTPException(status_code=500, detail=str(e))
 
 

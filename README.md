@@ -57,6 +57,12 @@ BOQTenders/
 - **🌐 Web UI**: Streamlit interface for easy document upload and interaction
 - **🚀 API**: FastAPI backend for programmatic access
 
+**Observability**
+App → OpenTelemetry → OTEL Collector → (Tempo, Prometheus, Loki) → Grafana dashboards
+
+**Frontend Integration**
+Use iframe embedding to show Grafana dashboards directly in your UI. See `monitoring_api.py` for iframe code generation.
+
 ## 🚀 Quick Start
 
 ### Prerequisites

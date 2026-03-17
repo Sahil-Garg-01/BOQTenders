@@ -6,6 +6,7 @@ Stateful agent for BOQ extraction and document chat using LangGraph.
 from typing import TypedDict, Optional, List, Dict, Any
 from pathlib import Path
 import tempfile
+from contextlib import nullcontext
 from loguru import logger
 from langgraph.graph import StateGraph, END
 from langchain_core.documents import Document
@@ -20,6 +21,13 @@ from services.boq_extractor import BOQExtractor
 from services.consistency import ConsistencyChecker
 from services.s3_utils import upload_to_s3, generate_presigned_get_url
 from services.mongo_store import insert_event
+
+# OpenTelemetry
+try:
+    from opentelemetry import trace
+    tracer = trace.get_tracer(__name__)
+except ImportError:
+    tracer = None
 
 
 class AgentState(TypedDict):
@@ -59,13 +67,17 @@ class BOQAgent:
 
     def run(self, state: AgentState) -> AgentState:
         """Run the agent workflow with the given state."""
-        if state["action"] == "chat" and state.get("qa_chain"):
-            return self._chat(state)
-        elif state["action"] == "extract_boq":
-            return self.extract_graph.invoke(state)
-        else:
-            state["error"] = "Invalid action or document not loaded"
-            return state
+        with (tracer.start_as_current_span("agent_run") if tracer else nullcontext()) as span:
+            if span:
+                span.set_attribute("process_id", state.get("process_id", ""))
+                span.set_attribute("action", state.get("action", ""))
+            if state["action"] == "chat" and state.get("qa_chain"):
+                return self._chat(state)
+            elif state["action"] == "extract_boq":
+                return self.extract_graph.invoke(state)
+            else:
+                state["error"] = "Invalid action or document not loaded"
+                return state
 
     def create_extract_graph(self) -> StateGraph:
         """Create the extraction workflow."""
@@ -83,167 +95,184 @@ class BOQAgent:
 
     def _extract_text(self, state: AgentState) -> AgentState:
         """Extract text from PDF."""
-        try:
-            logger.info(f'Extracting text from {state["file_name"]}')
+        with (tracer.start_as_current_span("extract_text") if tracer else nullcontext()) as span:
+            if span:
+                span.set_attribute("file_name", state.get("file_name", ""))
+            try:
+                logger.info(f'Extracting text from {state["file_name"]}')
 
-            text = self.pdf_extractor.extract_text(
-                state["file_path"],
-                filename=state["file_name"]
-            )
+                text = self.pdf_extractor.extract_text(
+                    state["file_path"],
+                    filename=state["file_name"]
+                )
 
-            if not text:
-                raise ValueError("Could not extract text from PDF")
+                if not text:
+                    raise ValueError("Could not extract text from PDF")
 
-            # Log progress
-            insert_event({
-                "id": state["process_id"],
-                "timestamp": self._get_timestamp(),
-                "service": "agent",
-                "current_step": "text_extraction",
-                "status": "completed",
-            })
+                # Log progress
+                insert_event({
+                    "id": state["process_id"],
+                    "timestamp": self._get_timestamp(),
+                    "service": "agent",
+                    "current_step": "text_extraction",
+                    "status": "completed",
+                })
 
-            return {**state, "extracted_text": text}
+                return {**state, "extracted_text": text}
 
-        except Exception as e:
-            logger.error(f'Text extraction failed: {e}')
-            return {**state, "error": str(e)}
+            except Exception as e:
+                logger.error(f'Text extraction failed: {e}')
+                return {**state, "error": str(e)}
 
     def _create_embeddings(self, state: AgentState) -> AgentState:
         """Create embeddings and vector store."""
-        try:
-            logger.info('Creating embeddings and vector store')
+        with (tracer.start_as_current_span("create_embeddings") if tracer else nullcontext()):
+            try:
+                logger.info('Creating embeddings and vector store')
 
-            chunks = self.embedding_service.split_text(state["extracted_text"])
-            vector_store = self.embedding_service.create_vector_store(chunks)
+                chunks = self.embedding_service.split_text(state["extracted_text"])
+                vector_store = self.embedding_service.create_vector_store(chunks)
 
-            # Log progress
-            insert_event({
-                "id": state["process_id"],
-                "timestamp": self._get_timestamp(),
-                "service": "agent",
-                "current_step": "embedding_creation",
-                "status": "completed",
-            })
+                # Log progress
+                insert_event({
+                    "id": state["process_id"],
+                    "timestamp": self._get_timestamp(),
+                    "service": "agent",
+                    "current_step": "embedding_creation",
+                    "status": "completed",
+                })
 
-            return {**state, "chunks": chunks, "vector_store": vector_store}
+                return {**state, "chunks": chunks, "vector_store": vector_store}
 
-        except Exception as e:
-            logger.error(f'Embedding creation failed: {e}')
-            return {**state, "error": str(e)}
+            except Exception as e:
+                logger.error(f'Embedding creation failed: {e}')
+                return {**state, "error": str(e)}
 
     def _extract_boq(self, state: AgentState) -> AgentState:
         """Extract BOQ from document."""
-        try:
-            logger.info(f'Extracting BOQ with {state["runs"]} runs')
+        with (tracer.start_as_current_span("extract_boq") if tracer else nullcontext()) as span:
+            if span:
+                span.set_attribute("runs", state.get("runs", 0))
+            try:
+                logger.info(f'Extracting BOQ with {state["runs"]} runs')
 
-            llm_client = LLMClient(api_key=state["api_key"])
-            boq_extractor = BOQExtractor(llm_client=llm_client)
-            consistency_checker = ConsistencyChecker(boq_extractor=boq_extractor)
+                llm_client = LLMClient(api_key=state["api_key"])
+                boq_extractor = BOQExtractor(llm_client=llm_client)
+                consistency_checker = ConsistencyChecker(boq_extractor=boq_extractor)
 
-            final_boq, all_outputs = boq_extractor.extract_iterative(
-                state["chunks"],
-                state["vector_store"],
-                state["runs"],
-                state["boq_mode"],
-                state["specific_boq"]
-            )
+                final_boq, all_outputs = boq_extractor.extract_iterative(
+                    state["chunks"],
+                    state["vector_store"],
+                    state["runs"],
+                    state["boq_mode"],
+                    state["specific_boq"]
+                )
 
-            consistency = consistency_checker.check_from_outputs(all_outputs)
+                consistency = consistency_checker.check_from_outputs(all_outputs)
 
-            # Upload to S3
-            self._upload_boq_to_s3(state["process_id"], final_boq, consistency)
+                # Upload to S3
+                self._upload_boq_to_s3(state["process_id"], final_boq, consistency)
 
-            # Log completion
-            insert_event({
-                "id": state["process_id"],
-                "timestamp": self._get_timestamp(),
-                "service": "agent",
-                "status": "completed",
-                "answer": final_boq,
-                "runs": state["runs"],
-            })
+                # Log completion
+                insert_event({
+                    "id": state["process_id"],
+                    "timestamp": self._get_timestamp(),
+                    "service": "agent",
+                    "status": "completed",
+                    "answer": final_boq,
+                    "runs": state["runs"],
+                })
 
-            return {
-                **state,
-                "boq_output": final_boq,
-                "consistency": consistency
-            }
+                return {
+                    **state,
+                    "boq_output": final_boq,
+                    "consistency": consistency
+                }
 
-        except Exception as e:
-            logger.error(f'BOQ extraction failed: {e}')
-            return {**state, "error": str(e)}
+            except Exception as e:
+                logger.error(f'BOQ extraction failed: {e}')
+                return {**state, "error": str(e)}
 
     def _build_rag(self, state: AgentState) -> AgentState:
         """Build RAG chain for chat."""
-        try:
-            logger.info('Building RAG chain')
+        with (tracer.start_as_current_span("build_rag") if tracer else nullcontext()):
+            try:
+                # Validate vector store exists before building RAG
+                if state.get("vector_store") is None:
+                    error_msg = "Cannot build RAG: No vector store available. Please extract BOQ from document first."
+                    logger.error(error_msg)
+                    return {**state, "error": error_msg}
 
-            llm_client = LLMClient(api_key=state["api_key"])
-            rag_builder = RAGChainBuilder(llm_client=llm_client)
-            qa_chain = rag_builder.build(state["vector_store"])
+                logger.info('Building RAG chain')
 
-            return {**state, "qa_chain": qa_chain}
+                llm_client = LLMClient(api_key=state["api_key"])
+                rag_builder = RAGChainBuilder(llm_client=llm_client)
+                qa_chain = rag_builder.build(state["vector_store"])
 
-        except Exception as e:
-            logger.error(f'RAG building failed: {e}')
-            return {**state, "error": str(e)}
+                return {**state, "qa_chain": qa_chain}
+
+            except Exception as e:
+                logger.error(f'RAG building failed: {e}')
+                return {**state, "error": str(e)}
 
     def _chat(self, state: AgentState) -> AgentState:
         """Handle chat interaction."""
-        try:
-            logger.info(f'Processing chat question: {state["question"][:50]}...')
-
-            # Sync memory with chat_history
-            memory = state["qa_chain"].memory
-            memory.chat_memory.clear()
-            for msg in state["chat_history"]:
-                if msg["role"] == "user":
-                    memory.chat_memory.add_user_message(msg["content"])
-                elif msg["role"] == "assistant":
-                    memory.chat_memory.add_ai_message(msg["content"])
-
-            # Log question
-            insert_event({
-                "id": f"{state['process_id']}_chat",
-                "timestamp": self._get_timestamp(),
-                "service": "chat",
-                "event_type": "question",
-                "status": "created",
-                "question": state["question"],
-            })
-
+        with (tracer.start_as_current_span("chat") if tracer else nullcontext()) as span:
+            if span:
+                span.set_attribute("question_length", len(state.get("question", "")))
             try:
-                response = state["qa_chain"].invoke({"question": state["question"]})
-                answer = response.get("answer", "")
-                logger.info(f'Chat response received: {answer[:100]}...')
+                logger.info(f'Processing chat question: {state["question"][:50]}...')
+
+                # Sync memory with chat_history
+                memory = state["qa_chain"].memory
+                memory.chat_memory.clear()
+                for msg in state["chat_history"]:
+                    if msg["role"] == "user":
+                        memory.chat_memory.add_user_message(msg["content"])
+                    elif msg["role"] == "assistant":
+                        memory.chat_memory.add_ai_message(msg["content"])
+
+                # Log question
+                insert_event({
+                    "id": f"{state['process_id']}_chat",
+                    "timestamp": self._get_timestamp(),
+                    "service": "chat",
+                    "event_type": "question",
+                    "status": "created",
+                    "question": state["question"],
+                })
+
+                try:
+                    response = state["qa_chain"].invoke({"question": state["question"]})
+                    answer = response.get("answer", "")
+                    logger.info(f'Chat response received: {answer[:100]}...')
+                except Exception as e:
+                    logger.error(f'Chat invoke failed: {e}')
+                    answer = f"Error: {str(e)}"
+
+                # Log answer
+                insert_event({
+                    "id": f"{state['process_id']}_chat",
+                    "timestamp": self._get_timestamp(),
+                    "service": "chat",
+                    "event_type": "answer",
+                    "status": "completed",
+                    "answer": answer,
+                })
+
+                # Update chat history
+                chat_history = state["chat_history"] + [
+                    {"role": "user", "content": state["question"]},
+                    {"role": "assistant", "content": answer}
+                ]
+
+                state["answer"] = answer
+                state["chat_history"] = chat_history
+                return state
+
             except Exception as e:
-                logger.error(f'Chat invoke failed: {e}')
-                answer = f"Error: {str(e)}"
-
-            # Log answer
-            insert_event({
-                "id": f"{state['process_id']}_chat",
-                "timestamp": self._get_timestamp(),
-                "service": "chat",
-                "event_type": "answer",
-                "status": "completed",
-                "answer": answer,
-            })
-
-            # Update chat history
-            chat_history = state["chat_history"] + [
-                {"role": "user", "content": state["question"]},
-                {"role": "assistant", "content": answer}
-            ]
-
-            state["answer"] = answer
-            state["chat_history"] = chat_history
-            return state
-
-        except Exception as e:
-            logger.error(f'Chat failed: {e}')
-            return {**state, "error": str(e)}
+                logger.error(f'Chat failed: {e}')
+                return {**state, "error": str(e)}
 
     def _upload_boq_to_s3(self, process_id: str, boq_output: str, consistency: Dict) -> None:
         """Upload BOQ results to S3."""

@@ -49,5 +49,26 @@ fastapi>=0.100.0
 uvicorn[standard]>=0.23.0
 python-multipart>=0.0.6
 
+# ============================================
+# Observability & Monitoring
+# ============================================
+# OpenTelemetry Core SDK
+opentelemetry-sdk>=1.21.0
+opentelemetry-api>=1.21.0
+
+# OpenTelemetry Exporters
+opentelemetry-exporter-otlp-proto-grpc>=1.21.0
+opentelemetry-exporter-otlp-proto-http>=1.21.0
+
+# OpenTelemetry Instrumentation
+opentelemetry-distro>=0.45.0
+opentelemetry-instrumentation>=0.45.0
+opentelemetry-instrumentation-fastapi>=0.45b0
+opentelemetry-instrumentation-requests>=0.45b0
+opentelemetry-instrumentation-pymongo>=0.45b0
+
+# Additional dependencies
+deprecated>=1.2.0
+
 # UI
 streamlit>=1.28.0

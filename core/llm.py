@@ -2,10 +2,18 @@
 LLM client wrapper for Google Generative AI (Gemini).
 """
 from typing import Optional
+from contextlib import nullcontext
 from loguru import logger
 from langchain_google_genai import GoogleGenerativeAI
 
 from config.settings import settings
+
+# OpenTelemetry
+try:
+    from opentelemetry import trace
+    _tracer = trace.get_tracer(__name__)
+except ImportError:
+    _tracer = None
 
 
 class LLMClient:
@@ -55,13 +63,20 @@ class LLMClient:
         Returns:
             LLM response as string.
         """
-        try:
-            result = str(self.llm.invoke(prompt))
-        except Exception as e:
-            if "API_KEY_INVALID" in str(e):
-                raise ValueError("Invalid API key")
-            raise
-        return result
+        with (_tracer.start_as_current_span("llm.invoke") if _tracer else nullcontext()) as span:
+            if span:
+                span.set_attribute("llm.model", self.model_name)
+                span.set_attribute("llm.temperature", float(self.temperature))
+                span.set_attribute("prompt.length", len(prompt or ""))
+            try:
+                result = str(self.llm.invoke(prompt))
+            except Exception as e:
+                if span:
+                    span.record_exception(e)
+                if "API_KEY_INVALID" in str(e):
+                    raise ValueError("Invalid API key")
+                raise
+            return result
     
     def batch_invoke(self, prompts: list[str]) -> list[str]:
         """
@@ -73,8 +88,11 @@ class LLMClient:
         Returns:
             List of LLM responses.
         """
-        logger.info(f'Batch invoking LLM with {len(prompts)} prompts')
-        results = []
-        for i, prompt in enumerate(prompts, 1):
-            results.append(self.invoke(prompt))
-        return results
+        with (_tracer.start_as_current_span("llm.batch_invoke") if _tracer else nullcontext()) as span:
+            if span:
+                span.set_attribute("prompts.count", len(prompts))
+            logger.info(f'Batch invoking LLM with {len(prompts)} prompts')
+            results = []
+            for i, prompt in enumerate(prompts, 1):
+                results.append(self.invoke(prompt))
+            return results
